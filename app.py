@@ -22,11 +22,12 @@ try:
 except ImportError:
     HAS_LS = False
 
-# ===== API 키 =====
-OPENAI_API_KEY      = "key"
-OPENWEATHER_API_KEY = "key"
-KAKAO_REST_API_KEY  = "key"
-TMAP_API_KEY        = "key"
+# ===== API 키 (st.secrets) =====
+try:
+    OPENAI_API_KEY      = "key"
+    OPENWEATHER_API_KEY = "key"
+    KAKAO_REST_API_KEY  = "key"
+    TMAP_API_KEY        = "key"
 except Exception:
     st.error(
         "⚠️ API 키 설정 누락\n\n"
@@ -346,7 +347,7 @@ function handlePain(t){{const box=document.getElementById('pain-check');for(cons
 
 function zoneMsg(prog,ps){{if(prog<0.3)return ps==='fast'?'초반 너무 빨라요. 후반 위해 늦추세요.':'좋은 시작이에요. 호흡 안정시키며 가요.';if(prog<0.7)return ps==='slow'?'중반이에요. 자세 점검, 어깨 힘 빼세요.':'리듬 좋아요. 유지하세요.';if(prog<0.9)return'끝이 보여요. 무너지면 아깝잖아요.';return'마지막! 끝까지 갑시다!';}}
 
-function onGPS(pos){{const lat=pos.coords.latitude,lng=pos.coords.longitude,spd=pos.coords.speed,now=Date.now();if(lastLat!==null){{const seg=hav(lastLat,lastLng,lat,lng);if(seg<50)totalDist+=seg;}}lastLat=lat;lastLng=lng;gpsTrack.push([lat,lng,now/1000]);if(gpsTrack.length%3===0){try{localStorage.setItem('ai_pacer_live_run',JSON.stringify({track:gpsTrack,paces:paceLog.map(p=>p.pace),totalDist:totalDist}));}catch(e){}};let pace=0;if(spd&&spd>0.3)pace=(1000/spd)/60;if(pace>0)paceLog.push({{ts:now,pace}});if(paceLog.length>600)paceLog.shift();const ps=pace>0?Math.floor(pace)+'분 '+Math.round((pace%1)*60)+'초/km':'측정중';document.getElementById('gps-info').innerText='✅ GPS | '+lat.toFixed(5)+', '+lng.toFixed(5)+' | '+ps+' | '+Math.round(totalDist)+'m';const prog=TOTAL_DIST>0?Math.min(1,totalDist/TOTAL_DIST):0;document.getElementById('zone-info').innerText='📍 '+( prog*100).toFixed(1)+'% | '+Math.round(totalDist)+'m / '+Math.round(TOTAL_DIST)+'m';
+function onGPS(pos){{const lat=pos.coords.latitude,lng=pos.coords.longitude,spd=pos.coords.speed,now=Date.now();if(lastLat!==null){{const seg=hav(lastLat,lastLng,lat,lng);if(seg<50)totalDist+=seg;}}lastLat=lat;lastLng=lng;gpsTrack.push([lat,lng,now/1000]);if(gpsTrack.length%3===0){{try{{localStorage.setItem('ai_pacer_live_run',JSON.stringify({{track:gpsTrack,paces:paceLog.map(p=>p.pace),totalDist:totalDist}}));}}catch(e){{}}}};let pace=0;if(spd&&spd>0.3)pace=(1000/spd)/60;if(pace>0)paceLog.push({{ts:now,pace}});if(paceLog.length>600)paceLog.shift();const ps=pace>0?Math.floor(pace)+'분 '+Math.round((pace%1)*60)+'초/km':'측정중';document.getElementById('gps-info').innerText='✅ GPS | '+lat.toFixed(5)+', '+lng.toFixed(5)+' | '+ps+' | '+Math.round(totalDist)+'m';const prog=TOTAL_DIST>0?Math.min(1,totalDist/TOTAL_DIST):0;document.getElementById('zone-info').innerText='📍 '+( prog*100).toFixed(1)+'% | '+Math.round(totalDist)+'m / '+Math.round(TOTAL_DIST)+'m';
 
 if(currentStep<STEPS.length){{const step=STEPS[currentStep];const d=hav(lat,lng,step.lat,step.lng);document.getElementById('nav-info').innerText='🧭 ['+(currentStep+1)+'/'+STEPS.length+'] '+(step.distance>0?Math.round(step.distance)+'m ':'') +step.description;if(d<WAYPOINT_RADIUS&&now-lastNavSpeak>5000){{lastNavSpeak=now;speak(step.description,null);if(currentStep+1<STEPS.length)currentStep++;else speak('목적지 도착! 수고하셨습니다!',null);}}}}
 
