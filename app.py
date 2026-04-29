@@ -1,8 +1,7 @@
 """
 AI-Pacer 최종 버전
-- streamlit-local-storage 패키지 의존성 완전 제거
-- 결과 탭은 JS가 localStorage 직접 읽어서 화면에 그림
-- 프로필/ACWR 데이터는 session_state만 사용 (한 세션 내 유지)
+- 시간 카운터 실시간 동작 (JS setInterval)
+- 결과 탭 자동 갱신 (러닝 종료 즉시 반영)
 """
 
 import streamlit as st
@@ -42,6 +41,7 @@ defaults = {
     "recent_runs": [],
     "env_risk": None,
     "env_messages": [],
+    "result_refresh": 0,  # 결과 탭 강제 갱신용
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -370,6 +370,31 @@ with st.sidebar:
             st.session_state.recent_runs = runs
             st.rerun()
 
+        # 가상 러닝 트랙 주입 (지도 데모용)
+        st.markdown("---")
+        if st.button("🗺️ 가상 러닝 트랙 주입 (지도 데모)", use_container_width=True):
+            components.html("""
+<script>
+const startLat = 37.5510, startLng = 126.9410;
+const track = [];
+const paces = [];
+let curTime = Date.now() / 1000 - 1500;
+for (let i = 0; i < 50; i++) {
+  const angle = (i / 50) * Math.PI * 2;
+  const r = 0.005;
+  const lat = startLat + r * Math.sin(angle);
+  const lng = startLng + r * Math.cos(angle) * 1.3;
+  track.push([lat, lng, curTime]);
+  curTime += 30;
+  paces.push(5.5 + Math.random() * 1.5);
+}
+localStorage.setItem('ai_pacer_live_run', JSON.stringify({
+  track: track, paces: paces, totalDist: 3000
+}));
+</script>
+""", height=0)
+            st.success("✅ 가상 트랙 주입! 결과 탭으로 가세요.")
+
 
 # ============================================================
 # 메인 UI
@@ -470,7 +495,7 @@ with tab_setup:
             st.success("러닝 시작! '러닝 중' 탭으로 이동하세요.")
 
 
-# TAB 2
+# TAB 2 — 시간 카운터 JS로 실시간 업데이트
 with tab_running:
     if not st.session_state.running and not st.session_state.finished:
         st.info("경로 설정 탭에서 러닝을 시작하세요.")
@@ -491,36 +516,69 @@ with tab_running:
 
     st.markdown("---")
     target = st.session_state.target_pace
-    elapsed = int((datetime.now() - st.session_state.start_time).total_seconds()) \
+
+    # ★ JS로 1초마다 시간 카운트 (Streamlit rerun 없이)
+    start_ts = int(st.session_state.start_time.timestamp() * 1000) \
         if st.session_state.start_time else 0
 
-    c1, c2 = st.columns(2)
-    c1.metric("🎯 목표 페이스", f"{target:.1f} min/km")
-    c2.metric("⏱️ 경과", f"{elapsed//60}분 {elapsed%60}초")
-    st.caption("💡 현재 페이스는 위 실시간 패널에서 확인하세요")
+    components.html(f"""
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;font-family:sans-serif;padding:15px;background:#1a1a2e;border-radius:10px;">
+  <div>
+    <div style="color:#888;font-size:13px;">🎯 목표 페이스</div>
+    <div style="font-size:32px;color:#64b5f6;font-weight:bold;">{target:.1f} min/km</div>
+  </div>
+  <div>
+    <div style="color:#888;font-size:13px;">⏱️ 경과 시간</div>
+    <div id="elapsed-time" style="font-size:32px;color:#a5d6a7;font-weight:bold;">0분 0초</div>
+  </div>
+</div>
+<script>
+const START_TS = {start_ts};
+function updateElapsed() {{
+  const elapsed = Math.floor((Date.now() - START_TS) / 1000);
+  const min = Math.floor(elapsed / 60);
+  const sec = elapsed % 60;
+  const el = document.getElementById('elapsed-time');
+  if (el) el.innerText = min + '분 ' + sec + '초';
+}}
+updateElapsed();
+setInterval(updateElapsed, 1000);
+</script>
+""", height=130)
+
+    st.caption("💡 현재 페이스/거리는 위 실시간 패널에서 확인하세요")
 
     st.markdown("---")
     if st.button("🛑 러닝 종료", type="secondary", use_container_width=True):
         st.session_state.running = False
         st.session_state.finished = True
+        st.session_state.result_refresh += 1  # 결과 탭 강제 갱신
         st.rerun()
 
 
-# TAB 3 — JS가 모든 걸 처리
+# TAB 3 — JS 컴포넌트 키에 refresh counter 넣어 자동 재로드
 with tab_result:
     st.subheader("🏅 러닝 리포트")
     st.caption("러닝 데이터는 브라우저에 저장됩니다 (LocalStorage)")
 
-    components.html("""
-<div id="result-wrap" style="font-family:sans-serif;color:#e0e0e0;">
-  <div id="metrics" style="background:#1a1a2e;padding:20px;border-radius:10px;margin-bottom:15px;min-height:80px;"></div>
-  <div id="map-wrap" style="background:#1a1a2e;padding:15px;border-radius:10px;margin-bottom:15px;display:none;">
+    col_r1, col_r2 = st.columns([1, 4])
+    with col_r1:
+        if st.button("🔄 새로고침", use_container_width=True):
+            st.session_state.result_refresh += 1
+            st.rerun()
+
+    # ★ refresh counter를 HTML에 포함시켜 강제 재렌더
+    refresh_id = st.session_state.result_refresh
+    components.html(f"""
+<div id="result-wrap-{refresh_id}" style="font-family:sans-serif;color:#e0e0e0;">
+  <div id="metrics-{refresh_id}" style="background:#1a1a2e;padding:20px;border-radius:10px;margin-bottom:15px;min-height:80px;"></div>
+  <div id="map-wrap-{refresh_id}" style="background:#1a1a2e;padding:15px;border-radius:10px;margin-bottom:15px;display:none;">
     <div style="margin-bottom:10px;font-weight:bold;">🗺️ 러닝 발자취</div>
-    <div id="map" style="height:400px;border-radius:8px;"></div>
+    <div id="map-{refresh_id}" style="height:400px;border-radius:8px;"></div>
   </div>
-  <div id="chart-wrap" style="background:#1a1a2e;padding:15px;border-radius:10px;display:none;">
+  <div id="chart-wrap-{refresh_id}" style="background:#1a1a2e;padding:15px;border-radius:10px;display:none;">
     <div style="margin-bottom:10px;font-weight:bold;">📈 페이스 변화</div>
-    <canvas id="paceChart" style="max-height:250px;"></canvas>
+    <canvas id="paceChart-{refresh_id}" style="max-height:250px;"></canvas>
   </div>
 </div>
 
@@ -529,46 +587,46 @@ with tab_result:
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <script>
-(function(){
+(function(){{
+  const RID = '{refresh_id}';
   let raw = null;
-  try { raw = localStorage.getItem('ai_pacer_live_run'); } catch(e) {
-    document.getElementById('metrics').innerHTML = '❌ localStorage 접근 오류: ' + e.message;
+  try {{ raw = localStorage.getItem('ai_pacer_live_run'); }} catch(e) {{
+    document.getElementById('metrics-' + RID).innerHTML = '❌ localStorage 오류: ' + e.message;
     return;
-  }
+  }}
 
-  if (!raw) {
-    document.getElementById('metrics').innerHTML =
+  if (!raw) {{
+    document.getElementById('metrics-' + RID).innerHTML =
       '<div style="color:#ef9a9a;padding:10px;text-align:center;">' +
       '⚠️ 저장된 러닝 데이터가 없습니다.<br><br>' +
-      '<small>1) 러닝 중에 GPS가 잡혔는지 확인<br>' +
-      '2) 실제로 이동했는지 확인 (데스크탑에서는 GPS가 안 잡힐 수 있음)<br>' +
-      '3) 폰 사파리에서 위치 권한 허용했는지 확인</small>' +
+      '<small>러닝 중 GPS가 잡혔는지, 실제로 이동했는지 확인하세요.<br>' +
+      '데스크탑에서는 위치가 1개만 잡혀 지도가 안 나올 수 있습니다.</small>' +
       '</div>';
     return;
-  }
+  }}
 
   let data;
-  try { data = JSON.parse(raw); }
-  catch(e) {
-    document.getElementById('metrics').innerHTML = '❌ 데이터 파싱 오류: ' + e.message;
+  try {{ data = JSON.parse(raw); }}
+  catch(e) {{
+    document.getElementById('metrics-' + RID).innerHTML = '❌ 파싱 오류: ' + e.message;
     return;
-  }
+  }}
 
   const track = data.track || [];
   const paces = data.paces || [];
   const totalDistKm = (data.totalDist || 0) / 1000;
 
   let elapsed = 0;
-  if (track.length >= 2) {
+  if (track.length >= 2) {{
     elapsed = track[track.length-1][2] - track[0][2];
-  }
+  }}
   const avgPace = totalDistKm > 0 ? (elapsed/60)/totalDistKm : 0;
   const apMin = Math.floor(avgPace);
   const apSec = Math.round((avgPace%1)*60);
   const elMin = Math.floor(elapsed/60);
   const elSec = Math.floor(elapsed%60);
 
-  document.getElementById('metrics').innerHTML =
+  document.getElementById('metrics-' + RID).innerHTML =
     '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:15px;">' +
     '<div><div style="color:#888;font-size:12px;">🏃 총 거리</div>' +
     '<div style="font-size:26px;color:#64b5f6;font-weight:bold;">' + totalDistKm.toFixed(2) + ' km</div></div>' +
@@ -580,52 +638,52 @@ with tab_result:
     '<div style="font-size:26px;color:#ffb74d;font-weight:bold;">' + track.length + '</div></div>' +
     '</div>';
 
-  if (track.length >= 2) {
-    document.getElementById('map-wrap').style.display = 'block';
+  if (track.length >= 2) {{
+    document.getElementById('map-wrap-' + RID).style.display = 'block';
     const latlngs = track.map(t => [t[0], t[1]]);
-    const map = L.map('map').setView(latlngs[0], 16);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    const map = L.map('map-' + RID).setView(latlngs[0], 16);
+    L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
       attribution: '© OpenStreetMap'
-    }).addTo(map);
-    for (let i=0; i<latlngs.length-1; i++) {
+    }}).addTo(map);
+    for (let i=0; i<latlngs.length-1; i++) {{
       const ratio = i / (latlngs.length-1);
       const r = Math.floor(255*ratio);
       const g = Math.floor(255*(1-ratio));
       const color = '#' + r.toString(16).padStart(2,'0') + g.toString(16).padStart(2,'0') + '00';
-      L.polyline([latlngs[i], latlngs[i+1]], {color, weight:5}).addTo(map);
-    }
+      L.polyline([latlngs[i], latlngs[i+1]], {{color, weight:5}}).addTo(map);
+    }}
     L.marker(latlngs[0]).addTo(map).bindPopup('출발');
     L.marker(latlngs[latlngs.length-1]).addTo(map).bindPopup('도착');
     map.fitBounds(latlngs);
     setTimeout(() => map.invalidateSize(), 200);
-  }
+  }}
 
-  if (paces.length > 0) {
-    document.getElementById('chart-wrap').style.display = 'block';
-    const ctx = document.getElementById('paceChart').getContext('2d');
-    new Chart(ctx, {
+  if (paces.length > 0) {{
+    document.getElementById('chart-wrap-' + RID).style.display = 'block';
+    const ctx = document.getElementById('paceChart-' + RID).getContext('2d');
+    new Chart(ctx, {{
       type: 'line',
-      data: {
+      data: {{
         labels: paces.map((_,i) => i+1),
-        datasets: [{
+        datasets: [{{
           label: '페이스 (min/km)',
           data: paces.map(p => parseFloat(p.toFixed(2))),
           borderColor: '#a5d6a7',
           backgroundColor: 'rgba(165,214,167,0.1)',
           tension: 0.3, pointRadius: 0
-        }]
-      },
-      options: {
+        }}]
+      }},
+      options: {{
         responsive: true, maintainAspectRatio: false,
-        scales: {
-          x: { ticks: {color:'#888'}, grid: {color:'#333'} },
-          y: { ticks: {color:'#888'}, grid: {color:'#333'}, reverse: true }
-        },
-        plugins: { legend: { labels: {color:'#e0e0e0'} } }
-      }
-    });
-  }
-})();
+        scales: {{
+          x: {{ ticks: {{color:'#888'}}, grid: {{color:'#333'}} }},
+          y: {{ ticks: {{color:'#888'}}, grid: {{color:'#333'}}, reverse: true }}
+        }},
+        plugins: {{ legend: {{ labels: {{color:'#e0e0e0'}} }} }}
+      }}
+    }});
+  }}
+}})();
 </script>
 """, height=900)
 
@@ -647,10 +705,11 @@ with tab_result:
                 st.rerun()
 
     st.markdown("---")
-    if st.button("🔄 새 러닝 시작 (저장 데이터 초기화)", use_container_width=True):
+    if st.button("🗑️ 저장된 러닝 데이터 삭제", use_container_width=True):
         components.html(
             "<script>try{localStorage.removeItem('ai_pacer_live_run');}catch(e){}</script>",
             height=0)
         st.session_state.finished = False
         st.session_state.running = False
+        st.session_state.result_refresh += 1
         st.rerun()
