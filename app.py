@@ -22,12 +22,11 @@ try:
 except ImportError:
     HAS_LS = False
 
-# ===== API 키 (st.secrets) =====
-try:
-    OPENAI_API_KEY      = st.secrets["OPENAI_API_KEY"]
-    OPENWEATHER_API_KEY = st.secrets["OPENWEATHER_API_KEY"]
-    KAKAO_REST_API_KEY  = st.secrets["KAKAO_REST_API_KEY"]
-    TMAP_API_KEY        = st.secrets["TMAP_API_KEY"]
+# ===== API 키 =====
+OPENAI_API_KEY      = "key"
+OPENWEATHER_API_KEY = "key"
+KAKAO_REST_API_KEY  = "key"
+TMAP_API_KEY        = "key"
 except Exception:
     st.error(
         "⚠️ API 키 설정 누락\n\n"
@@ -332,7 +331,7 @@ const WAYPOINT_RADIUS=30,SUDDEN_DROP=0.08,GRADUAL_DROP=0.05;
 const COOLDOWN={{emergency:0,injury:5000,pace:30000,motivation:60000,env:120000}};
 let currentStep=0,lastNavSpeak=0,lastByCat={{pace:0,motivation:0,injury:0,env:0}};
 let painCheckActive=false,painCheckStart=0;
-let paceLog=[],totalDist=0,lastLat=null,lastLng=null;
+let paceLog=[],totalDist=0,lastLat=null,lastLng=null;let gpsTrack=[];
 const KW={{safe:['괜찮','문제없','오케이','ok','좋아'],injury:['무릎','발목','종아리','햄스트링','허벅지','발바닥','허리','아파','시려','땡겨','저려','쥐'],emergency:['가슴','숨','어지','토할','쓰러'],fatigue:['힘들','지쳐','못하겠']}};
 
 function speak(t,cat){{if(!window.speechSynthesis)return;const now=Date.now();if(cat&&lastByCat[cat]!==undefined){{if(now-lastByCat[cat]<COOLDOWN[cat])return;lastByCat[cat]=now;}}if(cat==='emergency'||cat==='injury')window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang='ko-KR';u.rate=1.0;window.speechSynthesis.speak(u);document.getElementById('speech-log').innerText='🔊 '+t;}}
@@ -347,7 +346,7 @@ function handlePain(t){{const box=document.getElementById('pain-check');for(cons
 
 function zoneMsg(prog,ps){{if(prog<0.3)return ps==='fast'?'초반 너무 빨라요. 후반 위해 늦추세요.':'좋은 시작이에요. 호흡 안정시키며 가요.';if(prog<0.7)return ps==='slow'?'중반이에요. 자세 점검, 어깨 힘 빼세요.':'리듬 좋아요. 유지하세요.';if(prog<0.9)return'끝이 보여요. 무너지면 아깝잖아요.';return'마지막! 끝까지 갑시다!';}}
 
-function onGPS(pos){{const lat=pos.coords.latitude,lng=pos.coords.longitude,spd=pos.coords.speed,now=Date.now();if(lastLat!==null){{const seg=hav(lastLat,lastLng,lat,lng);if(seg<50)totalDist+=seg;}}lastLat=lat;lastLng=lng;let pace=0;if(spd&&spd>0.3)pace=(1000/spd)/60;if(pace>0)paceLog.push({{ts:now,pace}});if(paceLog.length>600)paceLog.shift();const ps=pace>0?Math.floor(pace)+'분 '+Math.round((pace%1)*60)+'초/km':'측정중';document.getElementById('gps-info').innerText='✅ GPS | '+lat.toFixed(5)+', '+lng.toFixed(5)+' | '+ps+' | '+Math.round(totalDist)+'m';const prog=TOTAL_DIST>0?Math.min(1,totalDist/TOTAL_DIST):0;document.getElementById('zone-info').innerText='📍 '+( prog*100).toFixed(1)+'% | '+Math.round(totalDist)+'m / '+Math.round(TOTAL_DIST)+'m';
+function onGPS(pos){{const lat=pos.coords.latitude,lng=pos.coords.longitude,spd=pos.coords.speed,now=Date.now();if(lastLat!==null){{const seg=hav(lastLat,lastLng,lat,lng);if(seg<50)totalDist+=seg;}}lastLat=lat;lastLng=lng;gpsTrack.push([lat,lng,now/1000]);if(gpsTrack.length%3===0){try{localStorage.setItem('ai_pacer_live_run',JSON.stringify({track:gpsTrack,paces:paceLog.map(p=>p.pace),totalDist:totalDist}));}catch(e){}};let pace=0;if(spd&&spd>0.3)pace=(1000/spd)/60;if(pace>0)paceLog.push({{ts:now,pace}});if(paceLog.length>600)paceLog.shift();const ps=pace>0?Math.floor(pace)+'분 '+Math.round((pace%1)*60)+'초/km':'측정중';document.getElementById('gps-info').innerText='✅ GPS | '+lat.toFixed(5)+', '+lng.toFixed(5)+' | '+ps+' | '+Math.round(totalDist)+'m';const prog=TOTAL_DIST>0?Math.min(1,totalDist/TOTAL_DIST):0;document.getElementById('zone-info').innerText='📍 '+( prog*100).toFixed(1)+'% | '+Math.round(totalDist)+'m / '+Math.round(TOTAL_DIST)+'m';
 
 if(currentStep<STEPS.length){{const step=STEPS[currentStep];const d=hav(lat,lng,step.lat,step.lng);document.getElementById('nav-info').innerText='🧭 ['+(currentStep+1)+'/'+STEPS.length+'] '+(step.distance>0?Math.round(step.distance)+'m ':'') +step.description;if(d<WAYPOINT_RADIUS&&now-lastNavSpeak>5000){{lastNavSpeak=now;speak(step.description,null);if(currentStep+1<STEPS.length)currentStep++;else speak('목적지 도착! 수고하셨습니다!',null);}}}}
 
@@ -582,8 +581,12 @@ with tab_running:
 
     st.markdown("---")
     target = st.session_state.target_pace
-    current = st.session_state.current_pace or target
-    pace_diff = current - target
+    current = st.session_state.current_pace
+    if current and current > 0:
+        pace_diff = current - target
+    else:
+        current = 0
+        pace_diff = 0
     elapsed = int((datetime.now() - st.session_state.start_time).total_seconds()) \
         if st.session_state.start_time else 0
 
@@ -646,31 +649,62 @@ with tab_running:
         if st.button("🛑 러닝 종료", type="secondary", use_container_width=True):
             st.session_state.running = False
             st.session_state.finished = True
-            track = st.session_state.gps_track
-            if track and len(track) >= 2:
-                total_km = sum(calc_distance_m(track[i][0], track[i][1],
-                               track[i+1][0], track[i+1][1])
-                               for i in range(len(track)-1)) / 1000
-                st.session_state.recent_runs.append(
-                    (datetime.now().strftime("%Y-%m-%d"), round(total_km, 1)))
-                save_user_data()
             st.rerun()
 
 # TAB 3
 with tab_result:
-    if not st.session_state.finished and not st.session_state.gps_track:
+    if not st.session_state.finished:
         st.info("러닝을 완료하면 여기에 결과가 기록됩니다.")
         st.stop()
+
+    # JS가 localStorage에 저장한 GPS 데이터 읽기
+    run_data = None
+    if HAS_LS and localS is not None:
+        try:
+            raw = localS.getItem("ai_pacer_live_run", key="get_run_result")
+            if raw:
+                run_data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            pass
+
+    if run_data and isinstance(run_data, dict):
+        track = run_data.get("track", [])
+        pace_list = run_data.get("paces", [])
+        total_dist_m = run_data.get("totalDist", 0)
+    else:
+        track = []
+        pace_list = []
+        total_dist_m = 0
 
     st.subheader("🏅 러닝 리포트")
     track = st.session_state.gps_track
     pace_hist = st.session_state.pace_history
 
+    st.subheader("🏅 러닝 리포트")
     if track and len(track) >= 2:
-        total_dist = sum(calc_distance_m(track[i][0], track[i][1],
-                         track[i+1][0], track[i+1][1])
-                         for i in range(len(track)-1)) / 1000
+        total_dist = total_dist_m / 1000
         elapsed_total = track[-1][2] - track[0][2]
+        avg_pace = (elapsed_total / 60) / total_dist if total_dist > 0 else 0
+        tgt = st.session_state.target_pace
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🏃 총 거리", f"{total_dist:.1f} km")
+        c2.metric("⏱️ 시간", f"{int(elapsed_total//60)}분 {int(elapsed_total%60)}초")
+        c3.metric("📈 평균 페이스", f"{avg_pace:.1f} min/km")
+        c4.metric("🎯 목표 대비", f"{avg_pace-tgt:+.1f} min/km", delta_color="inverse")
+
+        # ACWR에 기록 추가
+        if total_dist > 0.1:
+            already_saved = False
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            for r in st.session_state.recent_runs:
+                if r[0] == today_str and abs(r[1] - round(total_dist, 1)) < 0.01:
+                    already_saved = True
+            if not already_saved:
+                st.session_state.recent_runs.append((today_str, round(total_dist, 1)))
+                save_user_data()
+    else:
+        st.warning("GPS 데이터를 불러오는 중입니다. 페이지를 한 번 새로고침 해주세요.")
         avg_pace = (elapsed_total/60)/total_dist if total_dist > 0 else 0
         tgt = st.session_state.target_pace
 
@@ -726,10 +760,10 @@ with tab_result:
                            icon=folium.Icon(color="red", icon="stop")).add_to(m3)
         st_folium(m3, width=None, height=500)
 
-    if pace_hist:
+    if pace_list:
         st.subheader("📈 페이스 변화")
-        df = pd.DataFrame({"페이스": pace_hist,
-                            "목표": [st.session_state.target_pace]*len(pace_hist)})
+        df = pd.DataFrame({"페이스": pace_list,
+                            "목표": [st.session_state.target_pace] * len(pace_list)})
         st.line_chart(df)
 
     if st.button("💾 기록 저장", use_container_width=True):
