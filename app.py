@@ -653,13 +653,9 @@ with tab_running:
 
 # TAB 3
 with tab_result:
-    if not st.session_state.finished:
-        st.info("러닝을 완료하면 여기에 결과가 기록됩니다.")
-        st.stop()
-
     st.subheader("🏅 러닝 리포트")
+    st.caption("러닝을 마쳤다면 자동으로 결과가 표시됩니다.")
 
-    # JS가 localStorage 읽어서 결과 + 지도 + 그래프 다 그림
     components.html("""
 <div id="result-wrap" style="font-family:sans-serif;color:#e0e0e0;">
   <div id="metrics" style="background:#1a1a2e;padding:20px;border-radius:10px;margin-bottom:15px;"></div>
@@ -684,8 +680,11 @@ with tab_result:
 
   if (!raw) {
     document.getElementById('metrics').innerHTML =
-      '<div style="color:#ef9a9a;">⚠️ 저장된 러닝 데이터가 없습니다.<br>' +
-      '러닝 중에 GPS가 잡히고 실제로 이동했는지 확인하세요.</div>';
+      '<div style="color:#ef9a9a;padding:20px;text-align:center;">' +
+      '⚠️ 저장된 러닝 데이터가 없습니다.<br><br>' +
+      '<small>러닝 중에 GPS가 잡히고 실제로 이동했는지 확인하세요.<br>' +
+      '데스크탑에서는 GPS가 안 잡힐 수 있습니다 — 폰 사파리에서 테스트하세요.</small>' +
+      '</div>';
     document.getElementById('map-wrap').style.display = 'none';
     document.getElementById('chart-wrap').style.display = 'none';
     return;
@@ -702,7 +701,6 @@ with tab_result:
   const paces = data.paces || [];
   const totalDistKm = (data.totalDist || 0) / 1000;
 
-  // ===== 메트릭 =====
   let elapsed = 0;
   if (track.length >= 2) {
     elapsed = track[track.length-1][2] - track[0][2];
@@ -725,15 +723,12 @@ with tab_result:
     '<div style="font-size:26px;color:#ffb74d;font-weight:bold;">' + track.length + '</div></div>' +
     '</div>';
 
-  // ===== 발자취 지도 (Leaflet) =====
   if (track.length >= 2) {
     const latlngs = track.map(t => [t[0], t[1]]);
     const map = L.map('map').setView(latlngs[0], 16);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap'
     }).addTo(map);
-
-    // 그라데이션 폴리라인
     for (let i=0; i<latlngs.length-1; i++) {
       const ratio = i / (latlngs.length-1);
       const r = Math.floor(255*ratio);
@@ -741,7 +736,6 @@ with tab_result:
       const color = '#' + r.toString(16).padStart(2,'0') + g.toString(16).padStart(2,'0') + '00';
       L.polyline([latlngs[i], latlngs[i+1]], {color, weight:5}).addTo(map);
     }
-
     L.marker(latlngs[0]).addTo(map).bindPopup('출발');
     L.marker(latlngs[latlngs.length-1]).addTo(map).bindPopup('도착');
     map.fitBounds(latlngs);
@@ -750,7 +744,6 @@ with tab_result:
     document.getElementById('map-wrap').style.display = 'none';
   }
 
-  // ===== 페이스 그래프 =====
   if (paces.length > 0) {
     const ctx = document.getElementById('paceChart').getContext('2d');
     new Chart(ctx, {
@@ -777,21 +770,11 @@ with tab_result:
   } else {
     document.getElementById('chart-wrap').style.display = 'none';
   }
-
-  // ===== Python으로 거리 정보 전달 (ACWR 기록 추가용) =====
-  // hidden div에 거리 표시 → Python form 입력 안내
-  const distHint = document.createElement('div');
-  distHint.id = 'dist-hint';
-  distHint.style.cssText = 'background:#263238;padding:10px;margin-top:15px;border-radius:8px;color:#80cbc4;font-size:13px;';
-  distHint.innerHTML = '💡 ACWR에 기록 추가하려면 아래 입력란에 <b>' + totalDistKm.toFixed(2) + '</b> km를 입력하고 버튼 누르세요.';
-  document.getElementById('result-wrap').appendChild(distHint);
 })();
 </script>
 """, height=900)
 
     st.markdown("---")
-
-    # ACWR 수동 기록 추가 (JS가 표시한 거리를 사용자가 입력)
     st.subheader("📊 ACWR 기록 추가")
     col_x, col_y = st.columns([3, 1])
     with col_x:
@@ -806,7 +789,7 @@ with tab_result:
                 today_str = datetime.now().strftime("%Y-%m-%d")
                 st.session_state.recent_runs.append((today_str, round(manual_km, 1)))
                 save_user_data()
-                st.success(f"✅ {manual_km}km 기록됨. 사이드바에서 ACWR 확인하세요.")
+                st.success(f"✅ {manual_km}km 기록됨.")
                 st.rerun()
 
     st.markdown("---")
