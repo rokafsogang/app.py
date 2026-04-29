@@ -288,7 +288,7 @@ with tab_setup:
     col1, col2 = st.columns(2)
     with col1:
         start_input = st.text_input("출발지", placeholder="예: 서강대학교")
-        target_pace = st.slider("목표 페이스 (min/km)", 4.0, 12.0,
+        target_pace = st.slider("목표 페이스 (min/km)", 2.0, 12.0,
                                 st.session_state.target_pace, step=0.1)
         st.session_state.target_pace = target_pace
         pm = int(target_pace)
