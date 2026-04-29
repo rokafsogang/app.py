@@ -657,113 +657,161 @@ with tab_result:
         st.info("러닝을 완료하면 여기에 결과가 기록됩니다.")
         st.stop()
 
-    # JS localStorage에서 GPS 데이터 읽기
-    run_data = None
-    if HAS_LS and localS is not None:
-        try:
-            raw = localS.getItem("ai_pacer_live_run", key="get_run_result")
-            if raw:
-                run_data = json.loads(raw) if isinstance(raw, str) else raw
-        except Exception:
-            pass
-
-    if run_data and isinstance(run_data, dict):
-        track = run_data.get("track", [])
-        pace_list = run_data.get("paces", [])
-        total_dist_m = run_data.get("totalDist", 0)
-    else:
-        track = []
-        pace_list = []
-        total_dist_m = 0
-
     st.subheader("🏅 러닝 리포트")
 
-    if track and len(track) >= 2:
-        total_dist = total_dist_m / 1000
-        elapsed_total = track[-1][2] - track[0][2]
-        avg_pace = (elapsed_total / 60) / total_dist if total_dist > 0 else 0
-        tgt = st.session_state.target_pace
+    # JS가 localStorage 읽어서 결과 + 지도 + 그래프 다 그림
+    components.html("""
+<div id="result-wrap" style="font-family:sans-serif;color:#e0e0e0;">
+  <div id="metrics" style="background:#1a1a2e;padding:20px;border-radius:10px;margin-bottom:15px;"></div>
+  <div id="map-wrap" style="background:#1a1a2e;padding:15px;border-radius:10px;margin-bottom:15px;">
+    <div style="margin-bottom:10px;font-weight:bold;">🗺️ 러닝 발자취</div>
+    <div id="map" style="height:400px;border-radius:8px;"></div>
+  </div>
+  <div id="chart-wrap" style="background:#1a1a2e;padding:15px;border-radius:10px;">
+    <div style="margin-bottom:10px;font-weight:bold;">📈 페이스 변화</div>
+    <canvas id="paceChart" style="max-height:250px;"></canvas>
+  </div>
+</div>
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("🏃 총 거리", f"{total_dist:.1f} km")
-        c2.metric("⏱️ 시간", f"{int(elapsed_total//60)}분 {int(elapsed_total%60)}초")
-        c3.metric("📈 평균 페이스", f"{avg_pace:.1f} min/km")
-        c4.metric("🎯 목표 대비", f"{avg_pace-tgt:+.1f} min/km", delta_color="inverse")
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-        # ACWR에 기록 추가
-        if total_dist > 0.1:
-            already_saved = False
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            for r in st.session_state.recent_runs:
-                if r[0] == today_str and abs(r[1] - round(total_dist, 1)) < 0.01:
-                    already_saved = True
-            if not already_saved:
-                st.session_state.recent_runs.append((today_str, round(total_dist, 1)))
+<script>
+(function(){
+  let raw = null;
+  try { raw = localStorage.getItem('ai_pacer_live_run'); } catch(e) {}
+
+  if (!raw) {
+    document.getElementById('metrics').innerHTML =
+      '<div style="color:#ef9a9a;">⚠️ 저장된 러닝 데이터가 없습니다.<br>' +
+      '러닝 중에 GPS가 잡히고 실제로 이동했는지 확인하세요.</div>';
+    document.getElementById('map-wrap').style.display = 'none';
+    document.getElementById('chart-wrap').style.display = 'none';
+    return;
+  }
+
+  let data;
+  try { data = JSON.parse(raw); }
+  catch(e) {
+    document.getElementById('metrics').innerHTML = '❌ 데이터 파싱 오류: ' + e.message;
+    return;
+  }
+
+  const track = data.track || [];
+  const paces = data.paces || [];
+  const totalDistKm = (data.totalDist || 0) / 1000;
+
+  // ===== 메트릭 =====
+  let elapsed = 0;
+  if (track.length >= 2) {
+    elapsed = track[track.length-1][2] - track[0][2];
+  }
+  const avgPace = totalDistKm > 0 ? (elapsed/60)/totalDistKm : 0;
+  const apMin = Math.floor(avgPace);
+  const apSec = Math.round((avgPace%1)*60);
+  const elMin = Math.floor(elapsed/60);
+  const elSec = Math.floor(elapsed%60);
+
+  document.getElementById('metrics').innerHTML =
+    '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:15px;">' +
+    '<div><div style="color:#888;font-size:12px;">🏃 총 거리</div>' +
+    '<div style="font-size:26px;color:#64b5f6;font-weight:bold;">' + totalDistKm.toFixed(2) + ' km</div></div>' +
+    '<div><div style="color:#888;font-size:12px;">⏱️ 시간</div>' +
+    '<div style="font-size:26px;color:#64b5f6;font-weight:bold;">' + elMin + '분 ' + elSec + '초</div></div>' +
+    '<div><div style="color:#888;font-size:12px;">📈 평균 페이스</div>' +
+    '<div style="font-size:26px;color:#a5d6a7;font-weight:bold;">' + apMin + '\\'' + (apSec<10?'0':'') + apSec + '"/km</div></div>' +
+    '<div><div style="color:#888;font-size:12px;">📍 GPS 포인트</div>' +
+    '<div style="font-size:26px;color:#ffb74d;font-weight:bold;">' + track.length + '</div></div>' +
+    '</div>';
+
+  // ===== 발자취 지도 (Leaflet) =====
+  if (track.length >= 2) {
+    const latlngs = track.map(t => [t[0], t[1]]);
+    const map = L.map('map').setView(latlngs[0], 16);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    // 그라데이션 폴리라인
+    for (let i=0; i<latlngs.length-1; i++) {
+      const ratio = i / (latlngs.length-1);
+      const r = Math.floor(255*ratio);
+      const g = Math.floor(255*(1-ratio));
+      const color = '#' + r.toString(16).padStart(2,'0') + g.toString(16).padStart(2,'0') + '00';
+      L.polyline([latlngs[i], latlngs[i+1]], {color, weight:5}).addTo(map);
+    }
+
+    L.marker(latlngs[0]).addTo(map).bindPopup('출발');
+    L.marker(latlngs[latlngs.length-1]).addTo(map).bindPopup('도착');
+    map.fitBounds(latlngs);
+    setTimeout(() => map.invalidateSize(), 200);
+  } else {
+    document.getElementById('map-wrap').style.display = 'none';
+  }
+
+  // ===== 페이스 그래프 =====
+  if (paces.length > 0) {
+    const ctx = document.getElementById('paceChart').getContext('2d');
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: paces.map((_,i) => i+1),
+        datasets: [{
+          label: '페이스 (min/km)',
+          data: paces.map(p => p.toFixed(2)),
+          borderColor: '#a5d6a7',
+          backgroundColor: 'rgba(165,214,167,0.1)',
+          tension: 0.3, pointRadius: 0
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { ticks: {color:'#888'}, grid: {color:'#333'} },
+          y: { ticks: {color:'#888'}, grid: {color:'#333'}, reverse: true }
+        },
+        plugins: { legend: { labels: {color:'#e0e0e0'} } }
+      }
+    });
+  } else {
+    document.getElementById('chart-wrap').style.display = 'none';
+  }
+
+  // ===== Python으로 거리 정보 전달 (ACWR 기록 추가용) =====
+  // hidden div에 거리 표시 → Python form 입력 안내
+  const distHint = document.createElement('div');
+  distHint.id = 'dist-hint';
+  distHint.style.cssText = 'background:#263238;padding:10px;margin-top:15px;border-radius:8px;color:#80cbc4;font-size:13px;';
+  distHint.innerHTML = '💡 ACWR에 기록 추가하려면 아래 입력란에 <b>' + totalDistKm.toFixed(2) + '</b> km를 입력하고 버튼 누르세요.';
+  document.getElementById('result-wrap').appendChild(distHint);
+})();
+</script>
+""", height=900)
+
+    st.markdown("---")
+
+    # ACWR 수동 기록 추가 (JS가 표시한 거리를 사용자가 입력)
+    st.subheader("📊 ACWR 기록 추가")
+    col_x, col_y = st.columns([3, 1])
+    with col_x:
+        manual_km = st.number_input("위 결과의 총 거리(km) 입력",
+                                     min_value=0.0, max_value=100.0,
+                                     value=0.0, step=0.1, key="manual_dist")
+    with col_y:
+        st.write("")
+        st.write("")
+        if st.button("➕ ACWR 추가", type="primary", use_container_width=True):
+            if manual_km > 0:
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                st.session_state.recent_runs.append((today_str, round(manual_km, 1)))
                 save_user_data()
+                st.success(f"✅ {manual_km}km 기록됨. 사이드바에서 ACWR 확인하세요.")
+                st.rerun()
 
-        st.subheader("📊 ACWR 영향")
-        if st.session_state.profile_set:
-            td = datetime.now().date()
-            dl = []
-            if st.session_state.recent_runs:
-                dfr = pd.DataFrame(st.session_state.recent_runs, columns=["date", "km"])
-                dfr["date"] = pd.to_datetime(dfr["date"]).dt.date
-                ag = dfr.groupby("date")["km"].sum().to_dict()
-                for i in range(28, -1, -1):
-                    dl.append(ag.get(td - timedelta(days=i), 0.0))
-            ds = 0
-            if st.session_state.recent_runs:
-                ds = (td - pd.to_datetime(st.session_state.recent_runs[0][0]).date()).days
-            a2, _, _, cf = calculate_acwr_ewma(dl, st.session_state.baseline_weekly_km, ds)
-            l2, ad2, s2 = get_acwr_advice(a2, cf)
-            if s2 == "success":
-                st.success(f"{l2} — {ad2}")
-            elif s2 == "warning":
-                st.warning(f"{l2} — {ad2}")
-            elif s2 == "error":
-                st.error(f"{l2} — {ad2}")
-            else:
-                st.info(f"{l2} — {ad2}")
-    else:
-        st.warning("GPS 데이터를 불러오는 중입니다. 페이지를 한 번 새로고침 해주세요.")
-
-    st.subheader("🗺️ 러닝 발자취")
-    rd = st.session_state.route_data
-    if rd and st.session_state.s_lat:
-        path = rd["path"]
-        clat = (track[0][0]+track[-1][0])/2 if track and len(track) >= 2 else st.session_state.s_lat
-        clng = (track[0][1]+track[-1][1])/2 if track and len(track) >= 2 else st.session_state.s_lng
-        m3 = folium.Map(location=[clat, clng], zoom_start=15)
-        folium.PolyLine(path, color="#9E9E9E", weight=3, opacity=0.5).add_to(m3)
-        if len(track) >= 2:
-            for i in range(len(track)-1):
-                ratio = i / (len(track)-1)
-                r, g = int(255*ratio), int(255*(1-ratio))
-                folium.PolyLine([[track[i][0], track[i][1]],
-                                  [track[i+1][0], track[i+1][1]]],
-                                 color=f"#{r:02x}{g:02x}00", weight=5).add_to(m3)
-        if track:
-            folium.Marker([track[0][0], track[0][1]],
-                           icon=folium.Icon(color="green", icon="play")).add_to(m3)
-            folium.Marker([track[-1][0], track[-1][1]],
-                           icon=folium.Icon(color="red", icon="stop")).add_to(m3)
-        st_folium(m3, width=None, height=500)
-
-    if pace_list:
-        st.subheader("📈 페이스 변화")
-        df = pd.DataFrame({"페이스": pace_list,
-                            "목표": [st.session_state.target_pace] * len(pace_list)})
-        st.line_chart(df)
-
-    if st.button("💾 기록 저장", use_container_width=True):
-        record = {
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "route": f"{st.session_state.s_name} → {st.session_state.e_name}",
-            "track": [(t[0], t[1]) for t in track],
-            "pace_history": pace_list,
-            "target_pace": st.session_state.target_pace,
-        }
-        st.download_button("📥 JSON 다운로드",
-                            data=json.dumps(record, ensure_ascii=False, indent=2),
-                            file_name=f"run_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
-                            mime="application/json")
+    st.markdown("---")
+    if st.button("🔄 새 러닝 시작 (데이터 초기화)", use_container_width=True):
+        components.html("<script>try{localStorage.removeItem('ai_pacer_live_run');}catch(e){}</script>", height=0)
+        st.session_state.finished = False
+        st.session_state.running = False
+        st.rerun()
