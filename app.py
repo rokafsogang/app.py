@@ -146,41 +146,45 @@ def calculate_acwr_ewma(daily_loads: list,
       λ_acute  = 2/(7+1)  ≈ 0.25
       λ_chronic= 2/(28+1) ≈ 0.069
 
-    Cold Start 처리:
-      - 가입 후 28일 미만: baseline(자가보고)을 가중 혼합
-      - Progressive weighting (4주 점진적 전환)
+    설계 원칙:
+      - Chronic = 장기 베이스라인 (자가보고 baseline에서 출발)
+      - Acute   = 최근 활동량 (실제 데이터에서 출발, 없으면 0)
+      - 데이터가 쌓일수록 두 값이 자연스럽게 분리됨
 
-    Returns: (acwr, ewma_acute, ewma_chronic, confidence)
-      confidence: 'self_report' | 'mixed' | 'measured'
+    Returns: (acwr, ewma_acute_daily, ewma_chronic_daily, confidence)
     """
-    LAMBDA_ACUTE = 0.25
+    LAMBDA_ACUTE   = 0.25
     LAMBDA_CHRONIC = 0.069
 
-    # baseline: 주간 km → 일평균 km
     baseline_daily = baseline / 7.0 if baseline > 0 else 0.0
 
     if not daily_loads and baseline_daily == 0:
         return None, 0, 0, "no_data"
 
-    # 28일 미만 → 자가보고 가상 데이터로 채움
-    if days_since_signup < 28:
-        weight = days_since_signup / 28.0  # 0 → 1
-        confidence = "self_report" if days_since_signup < 7 else "mixed"
+    # ── 핵심: Acute와 Chronic의 초기값을 분리 ──
+    # Chronic: 자가보고 baseline에서 시작 (장기 평균 가정)
+    ewma_c = baseline_daily
+
+    # Acute: 실제 최근 활동에서 출발. 데이터 없으면 0
+    if daily_loads:
+        # 최근 7일 평균을 acute 초기값으로
+        recent_7 = daily_loads[-7:] if len(daily_loads) >= 7 else daily_loads
+        ewma_a = sum(recent_7) / len(recent_7) if recent_7 else 0
     else:
-        weight = 1.0
+        ewma_a = 0  # 데이터 없으면 acute는 0 (이번 주 안 뛰었음)
+
+    # 신뢰도 라벨링
+    if days_since_signup < 7:
+        confidence = "self_report"
+    elif days_since_signup < 28:
+        confidence = "mixed"
+    else:
         confidence = "measured"
 
-    # 초기값 = baseline_daily (없으면 첫 데이터)
-    init = baseline_daily if baseline_daily > 0 else (
-        daily_loads[0] if daily_loads else 0)
-    ewma_a = init
-    ewma_c = init
-
+    # 일별 데이터로 EWMA 갱신
     for load in daily_loads:
-        # 측정 데이터에 weight, baseline에 (1-weight) 혼합
-        effective = load * weight + baseline_daily * (1 - weight)
-        ewma_a = effective * LAMBDA_ACUTE + ewma_a * (1 - LAMBDA_ACUTE)
-        ewma_c = effective * LAMBDA_CHRONIC + ewma_c * (1 - LAMBDA_CHRONIC)
+        ewma_a = load * LAMBDA_ACUTE   + ewma_a * (1 - LAMBDA_ACUTE)
+        ewma_c = load * LAMBDA_CHRONIC + ewma_c * (1 - LAMBDA_CHRONIC)
 
     if ewma_c < 0.01:
         return None, ewma_a, ewma_c, confidence
@@ -779,18 +783,18 @@ with st.sidebar:
     st.caption(advice)
 
     if acwr is not None:
-        col_x, col_y = st.columns(2)
-        col_x.metric("Acute (7d 평균)", f"{ewma_a*7:.1f} km")
-        col_y.metric("Chronic (28d 평균)", f"{ewma_c*7:.1f} km")
-        # Sweet Spot 시각화
-        sweet_pos = min(max(acwr, 0.5), 2.0)
+        # 사이드바 폭이 좁아 세로 배치로 변경
+        st.metric("📅 Acute (최근 7일 주간거리)",
+                  f"{ewma_a*7:.1f} km")
+        st.metric("📆 Chronic (최근 28일 주간거리)",
+                  f"{ewma_c*7:.1f} km")
         st.caption(f"📍 Sweet Spot: 0.8 ≤ ACWR ≤ 1.3 (Gabbett 2016)")
 
 
 # ============================================================
 # 메인 UI
 # ============================================================
-st.title("🏃‍♂️ AI-Pacer (Day 2)")
+st.title("🏃‍♂️ AI-Pacer ")
 tab_setup, tab_running, tab_result = st.tabs(
     ["⚙️ 경로 설정", "🏃 러닝 중", "📊 결과 기록"])
 
