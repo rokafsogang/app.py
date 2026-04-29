@@ -357,7 +357,19 @@ with st.sidebar:
         st.caption("⚠️ 새로고침 시 데이터 사라짐 (streamlit-local-storage 미설치)")
 
     if not st.session_state.profile_set:
-        st.warning("초기 프로필을 설정해주세요")
+        # ===== 디버그 =====
+        st.write("### 🔍 디버그")
+        if HAS_LS and localS is not None:
+            try:
+                raw_test = localS.getItem("ai_pacer_live_run", key="debug_get")
+                st.write(f"localStorage 'ai_pacer_live_run' 값: `{raw_test}`")
+                st.write(f"타입: {type(raw_test)}")
+            except Exception as e:
+                st.write(f"읽기 에러: {e}")
+    else:
+        st.write("LocalStorage 사용 불가")
+    st.markdown("---")
+    st.warning("초기 프로필을 설정해주세요")
 
     with st.expander("🎯 기초기록 설문", expanded=not st.session_state.profile_set):
         st.caption("ACSM Pre-participation 가이드 기반")
