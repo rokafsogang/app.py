@@ -1,7 +1,8 @@
 """
-AI-Pacer Day 2 통합 버전
-- WBGT 환경 분석, ACWR 부상추적, 페이스 윈도우, STT 부상확인
-- LocalStorage 영구저장, st.secrets API키 분리
+AI-Pacer 최종 버전
+- streamlit-local-storage 패키지 의존성 완전 제거
+- 결과 탭은 JS가 localStorage 직접 읽어서 화면에 그림
+- 프로필/ACWR 데이터는 session_state만 사용 (한 세션 내 유지)
 """
 
 import streamlit as st
@@ -15,14 +16,7 @@ from streamlit_folium import st_folium
 from openai import OpenAI
 from datetime import datetime, timedelta
 
-# LocalStorage (브라우저 영구 저장)
-try:
-    from streamlit_local_storage import LocalStorage
-    HAS_LS = True
-except ImportError:
-    HAS_LS = False
-
-# ===== API 키 (st.secrets) =====
+# ===== API 키 =====
 OPENAI_API_KEY      = st.secrets["OPENAI_API_KEY"]
 OPENWEATHER_API_KEY = st.secrets["OPENWEATHER_API_KEY"]
 KAKAO_REST_API_KEY  = st.secrets["KAKAO_REST_API_KEY"]
@@ -31,9 +25,7 @@ TMAP_API_KEY        = st.secrets["TMAP_API_KEY"]
 client = OpenAI(api_key=OPENAI_API_KEY)
 st.set_page_config(page_title="AI-Pacer", layout="wide")
 
-# ============================================================
-# Session State
-# ============================================================
+# ===== Session State =====
 defaults = {
     "running": False, "finished": False,
     "gps_track": [], "pace_history": [],
@@ -55,72 +47,9 @@ for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ============================================================
-# LocalStorage 영구 저장
-# ============================================================
-DATA_KEY = "ai_pacer_data_v1"
-if HAS_LS:
-    localS = LocalStorage()
-else:
-    localS = None
-
-
-def save_user_data():
-    if not HAS_LS or localS is None:
-        return False
-    data = {
-        "profile_set":        st.session_state.profile_set,
-        "baseline_weekly_km": st.session_state.baseline_weekly_km,
-        "user_level":         st.session_state.user_level,
-        "recent_runs":        st.session_state.recent_runs,
-    }
-    try:
-        localS.setItem(DATA_KEY,
-                       json.dumps(data, ensure_ascii=False),
-                       key=f"save_{datetime.now().timestamp()}")
-        return True
-    except Exception:
-        return False
-
-
-def load_user_data():
-    if not HAS_LS or localS is None:
-        return False
-    try:
-        raw = localS.getItem(DATA_KEY, key="load_userdata")
-        if not raw:
-            return False
-        data = json.loads(raw) if isinstance(raw, str) else raw
-        if not isinstance(data, dict):
-            return False
-        st.session_state.profile_set        = data.get("profile_set", False)
-        st.session_state.baseline_weekly_km = data.get("baseline_weekly_km", 0.0)
-        st.session_state.user_level         = data.get("user_level", "입문")
-        st.session_state.recent_runs        = data.get("recent_runs", [])
-        return True
-    except Exception:
-        return False
-
-
-def clear_user_data():
-    if HAS_LS and localS is not None:
-        try:
-            localS.deleteItem(DATA_KEY,
-                              key=f"del_{datetime.now().timestamp()}")
-        except Exception:
-            pass
-    for k in ["profile_set", "baseline_weekly_km",
-              "user_level", "recent_runs"]:
-        st.session_state[k] = defaults[k]
-
-
-# 앱 시작 시 1회 로드
-if "data_loaded" not in st.session_state:
-    load_user_data()
-    st.session_state.data_loaded = True
 
 # ============================================================
-# 1. 환경 분석 (WBGT)
+# 환경 분석 (WBGT)
 # ============================================================
 def calculate_wbgt(temp_c, humidity):
     e = (humidity / 100.0) * 6.105 * math.exp(17.27 * temp_c / (237.7 + temp_c))
@@ -157,8 +86,9 @@ def get_environment_risk(temp_c, humidity, wind_ms):
         msgs.append(f"✅ 쾌적 (WBGT {wbgt:.1f}°C, 바람 {wind_ms:.1f}m/s).")
     return risk, msgs, wbgt
 
+
 # ============================================================
-# 2. ACWR (EWMA)
+# ACWR (EWMA)
 # ============================================================
 def calculate_acwr_ewma(daily_loads, baseline=0.0, days_since_signup=0):
     LA, LC = 0.25, 0.069
@@ -200,17 +130,14 @@ def get_acwr_advice(acwr, confidence):
     elif confidence == "mixed":
         note = " (혼합)"
     if acwr < 0.8:
-        return (f"⚠️ 저부하 ACWR {acwr:.2f}{note}",
-                "천천히 시작하세요.", "warning")
+        return (f"⚠️ 저부하 ACWR {acwr:.2f}{note}", "천천히 시작하세요.", "warning")
     elif acwr <= 1.3:
-        return (f"✅ Sweet Spot ACWR {acwr:.2f}{note}",
-                "적정 훈련량입니다.", "success")
+        return (f"✅ Sweet Spot ACWR {acwr:.2f}{note}", "적정 훈련량입니다.", "success")
     elif acwr <= 1.5:
-        return (f"⚠️ 주의 ACWR {acwr:.2f}{note}",
-                "회복 챙기세요.", "warning")
+        return (f"⚠️ 주의 ACWR {acwr:.2f}{note}", "회복 챙기세요.", "warning")
     else:
-        return (f"🚨 위험 ACWR {acwr:.2f}{note}",
-                "부상 위험 높음. 회복 페이스 권장.", "error")
+        return (f"🚨 위험 ACWR {acwr:.2f}{note}", "부상 위험 높음.", "error")
+
 
 # ============================================================
 # 외부 API
@@ -298,8 +225,9 @@ def calc_distance_m(lat1, lng1, lat2, lng2):
          math.cos(phi1) * math.cos(phi2) * math.sin(math.radians(lng2 - lng1) / 2) ** 2)
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
+
 # ============================================================
-# 3. JS 컴포넌트 (GPS + 페이스윈도우 + STT + 구간멘트)
+# JS 컴포넌트 (러닝 중)
 # ============================================================
 def build_auto_component(steps, target_pace, total_dist_m, env_messages):
     sj = json.dumps(steps, ensure_ascii=False)
@@ -328,48 +256,32 @@ function wavg(sec){{const c=Date.now()-sec*1000,r=paceLog.filter(p=>p.ts>=c&&p.p
 function detectPattern(){{const w1=wavg(60),w5=wavg(300);if(!w1||!w5)return'init';const s=(w1-w5)/w5;if(s>SUDDEN_DROP)return'sudden_drop';if(s<-SUDDEN_DROP)return'sudden_spike';if(paceLog.length>20){{const bl=paceLog.slice(0,10).filter(p=>p.pace>0);const bv=bl.reduce((s,p)=>s+p.pace,0)/Math.max(1,bl.length);if(bv>0&&(w5-bv)/bv>GRADUAL_DROP)return'gradual_drop';}}return'stable';}}
 
 let recog=null;
-function startPainCheck(){{if(painCheckActive)return;painCheckActive=true;painCheckStart=Date.now();const box=document.getElementById('pain-check');box.style.display='block';box.innerText='🎙️ 응답 대기 중...';speak('페이스가 떨어졌어요. 어디 불편한 곳 있나요? 괜찮으면 괜찮아라고 답해주세요.','injury');if(!('webkitSpeechRecognition' in window)&&!('SpeechRecognition' in window)){{box.innerText='⚠️ 음성인식 미지원';return;}}const SR=window.SpeechRecognition||window.webkitSpeechRecognition;recog=new SR();recog.lang='ko-KR';recog.interimResults=false;recog.onresult=(e)=>{{const t=e.results[0][0].transcript.toLowerCase();box.innerText='👂 '+t;handlePain(t);}};recog.onerror=()=>{{box.innerText='⚠️ 음성 인식 오류';painCheckActive=false;}};recog.onend=()=>{{if(painCheckActive&&Date.now()-painCheckStart>15000){{box.innerText='⏱️ 응답없음';speak('응답이 없어요. 페이스 줄이고 걸어주세요.','injury');painCheckActive=false;}}}};try{{recog.start();}}catch(e){{}}}}
+function startPainCheck(){{if(painCheckActive)return;painCheckActive=true;painCheckStart=Date.now();const box=document.getElementById('pain-check');box.style.display='block';box.innerText='🎙️ 응답 대기 중...';speak('페이스가 떨어졌어요. 어디 불편한 곳 있나요? 괜찮으면 괜찮아라고 답해주세요.','injury');if(!('webkitSpeechRecognition' in window)&&!('SpeechRecognition' in window)){{box.innerText='⚠️ 음성인식 미지원';return;}}const SR=window.SpeechRecognition||window.webkitSpeechRecognition;recog=new SR();recog.lang='ko-KR';recog.interimResults=false;recog.onresult=(e)=>{{const t=e.results[0][0].transcript.toLowerCase();box.innerText='👂 '+t;handlePain(t);}};recog.onerror=()=>{{box.innerText='⚠️ 음성 인식 오류';painCheckActive=false;}};recog.onend=()=>{{if(painCheckActive&&Date.now()-painCheckStart>15000){{box.innerText='⏱️ 응답없음';speak('응답이 없어요.','injury');painCheckActive=false;}}}};try{{recog.start();}}catch(e){{}}}}
 
-function handlePain(t){{const box=document.getElementById('pain-check');for(const k of KW.emergency){{if(t.includes(k)){{box.style.background='#b71c1c';box.innerText='🚨 응급: '+k;speak('즉시 멈추고 안전한 곳에 앉으세요. 119 연락하세요.','emergency');painCheckActive=false;return;}}}}for(const k of KW.injury){{if(t.includes(k)){{box.style.background='#bf360c';box.innerText='⚠️ 부상: '+k;speak('지금 바로 멈추세요. 통증 무시하면 큰 부상으로 이어져요.','injury');painCheckActive=false;return;}}}}for(const k of KW.safe){{if(t.includes(k)){{box.style.background='#1b5e20';box.innerText='✅ 안전 확인';speak('다행이에요. 호흡 가다듬고 회복해봐요.','pace');painCheckActive=false;return;}}}}for(const k of KW.fatigue){{if(t.includes(k)){{box.innerText='😮‍💨 피로';speak('페이스 늦추고 4초 호흡으로 바꿔보세요.','pace');painCheckActive=false;return;}}}}box.innerText='❓ 미감지: '+t;painCheckActive=false;}}
+function handlePain(t){{const box=document.getElementById('pain-check');for(const k of KW.emergency){{if(t.includes(k)){{box.style.background='#b71c1c';box.innerText='🚨 응급: '+k;speak('즉시 멈추고 안전한 곳에 앉으세요.','emergency');painCheckActive=false;return;}}}}for(const k of KW.injury){{if(t.includes(k)){{box.style.background='#bf360c';box.innerText='⚠️ 부상: '+k;speak('지금 바로 멈추세요.','injury');painCheckActive=false;return;}}}}for(const k of KW.safe){{if(t.includes(k)){{box.style.background='#1b5e20';box.innerText='✅ 안전 확인';speak('다행이에요.','pace');painCheckActive=false;return;}}}}for(const k of KW.fatigue){{if(t.includes(k)){{box.innerText='😮‍💨 피로';speak('페이스 늦추세요.','pace');painCheckActive=false;return;}}}}box.innerText='❓ 미감지: '+t;painCheckActive=false;}}
 
-function zoneMsg(prog,ps){{if(prog<0.3)return ps==='fast'?'초반 너무 빨라요. 후반 위해 늦추세요.':'좋은 시작이에요. 호흡 안정시키며 가요.';if(prog<0.7)return ps==='slow'?'중반이에요. 자세 점검, 어깨 힘 빼세요.':'리듬 좋아요. 유지하세요.';if(prog<0.9)return'끝이 보여요. 무너지면 아깝잖아요.';return'마지막! 끝까지 갑시다!';}}
+function zoneMsg(prog,ps){{if(prog<0.3)return ps==='fast'?'초반 너무 빨라요.':'좋은 시작이에요.';if(prog<0.7)return ps==='slow'?'중반이에요. 자세 점검.':'리듬 좋아요.';if(prog<0.9)return'끝이 보여요.';return'마지막!';}}
 
-function onGPS(pos){{const lat=pos.coords.latitude,lng=pos.coords.longitude,spd=pos.coords.speed,now=Date.now();if(lastLat!==null){{const seg=hav(lastLat,lastLng,lat,lng);if(seg<50)totalDist+=seg;}}lastLat=lat;lastLng=lng;gpsTrack.push([lat,lng,now/1000]);if(gpsTrack.length%3===0){{try{{localStorage.setItem('ai_pacer_live_run',JSON.stringify({{track:gpsTrack,paces:paceLog.map(p=>p.pace),totalDist:totalDist}}));}}catch(e){{}}}};let pace=0;if(spd&&spd>0.3)pace=(1000/spd)/60;if(pace>0)paceLog.push({{ts:now,pace}});if(paceLog.length>600)paceLog.shift();const ps=pace>0?Math.floor(pace)+'분 '+Math.round((pace%1)*60)+'초/km':'측정중';document.getElementById('gps-info').innerText='✅ GPS | '+lat.toFixed(5)+', '+lng.toFixed(5)+' | '+ps+' | '+Math.round(totalDist)+'m';const prog=TOTAL_DIST>0?Math.min(1,totalDist/TOTAL_DIST):0;document.getElementById('zone-info').innerText='📍 '+( prog*100).toFixed(1)+'% | '+Math.round(totalDist)+'m / '+Math.round(TOTAL_DIST)+'m';
+function onGPS(pos){{const lat=pos.coords.latitude,lng=pos.coords.longitude,spd=pos.coords.speed,now=Date.now();if(lastLat!==null){{const seg=hav(lastLat,lastLng,lat,lng);if(seg<50)totalDist+=seg;}}lastLat=lat;lastLng=lng;gpsTrack.push([lat,lng,now/1000]);try{{localStorage.setItem('ai_pacer_live_run',JSON.stringify({{track:gpsTrack,paces:paceLog.map(p=>p.pace),totalDist:totalDist}}));}}catch(e){{}};let pace=0;if(spd&&spd>0.3)pace=(1000/spd)/60;if(pace>0)paceLog.push({{ts:now,pace}});if(paceLog.length>600)paceLog.shift();const ps=pace>0?Math.floor(pace)+'분 '+Math.round((pace%1)*60)+'초/km':'측정중';document.getElementById('gps-info').innerText='✅ GPS | '+lat.toFixed(5)+', '+lng.toFixed(5)+' | '+ps+' | '+Math.round(totalDist)+'m';const prog=TOTAL_DIST>0?Math.min(1,totalDist/TOTAL_DIST):0;document.getElementById('zone-info').innerText='📍 '+(prog*100).toFixed(1)+'% | '+Math.round(totalDist)+'m / '+Math.round(TOTAL_DIST)+'m';
 
-if(currentStep<STEPS.length){{const step=STEPS[currentStep];const d=hav(lat,lng,step.lat,step.lng);document.getElementById('nav-info').innerText='🧭 ['+(currentStep+1)+'/'+STEPS.length+'] '+(step.distance>0?Math.round(step.distance)+'m ':'') +step.description;if(d<WAYPOINT_RADIUS&&now-lastNavSpeak>5000){{lastNavSpeak=now;speak(step.description,null);if(currentStep+1<STEPS.length)currentStep++;else speak('목적지 도착! 수고하셨습니다!',null);}}}}
+if(currentStep<STEPS.length){{const step=STEPS[currentStep];const d=hav(lat,lng,step.lat,step.lng);document.getElementById('nav-info').innerText='🧭 ['+(currentStep+1)+'/'+STEPS.length+'] '+(step.distance>0?Math.round(step.distance)+'m ':'') +step.description;if(d<WAYPOINT_RADIUS&&now-lastNavSpeak>5000){{lastNavSpeak=now;speak(step.description,null);if(currentStep+1<STEPS.length)currentStep++;else speak('목적지 도착!',null);}}}}
 
-if(!painCheckActive&&pace>0){{const pat=detectPattern();let pc='stable';if(pat==='sudden_drop'){{startPainCheck();pc='slow';}}else if(pat==='gradual_drop'){{const dk=totalDist/1000;let m='페이스가 떨어지고 있어요. ';if(dk<5)m+='호흡 가다듬으세요.';else if(dk<15)m+='자세 점검. 어깨 힘 빼세요.';else m+='에너지 보충하세요. 젤이나 당분.';speak(m,'pace');pc='slow';}}else if(pat==='sudden_spike'){{speak('너무 빨라졌어요. 원래 페이스로.','pace');pc='fast';}}else{{const diff=(pace-TARGET_PACE)/TARGET_PACE;if(diff>0.10){{speak('목표보다 느려요. 올려보세요.','pace');pc='slow';}}else if(diff<-0.10){{speak('너무 빨라요. 줄이세요.','pace');pc='fast';}}}}const info=document.getElementById('pace-info');if(pc==='slow'){{info.style.color='#ef9a9a';info.innerText='🐢 느림 — '+ps;}}else if(pc==='fast'){{info.style.color='#fff176';info.innerText='🚀 빠름 — '+ps;}}else{{info.style.color='#a5d6a7';info.innerText='✅ 정상 — '+ps;}}if(now-lastByCat.motivation>COOLDOWN.motivation){{speak(zoneMsg(prog,pc),'motivation');}}}}
-
-try{{window.parent.postMessage({{type:'streamlit:setComponentValue',value:JSON.stringify({{lat:lastLat,lng:lastLng,pace:0,step:currentStep,dist:totalDist,ts:Date.now()}})}},'*');}}catch(e){{}}}}
+if(!painCheckActive&&pace>0){{const pat=detectPattern();let pc='stable';if(pat==='sudden_drop'){{startPainCheck();pc='slow';}}else if(pat==='gradual_drop'){{const dk=totalDist/1000;let m='페이스 떨어지고 있어요. ';if(dk<5)m+='호흡 가다듬으세요.';else if(dk<15)m+='자세 점검.';else m+='에너지 보충하세요.';speak(m,'pace');pc='slow';}}else if(pat==='sudden_spike'){{speak('너무 빨라졌어요.','pace');pc='fast';}}else{{const diff=(pace-TARGET_PACE)/TARGET_PACE;if(diff>0.10){{speak('목표보다 느려요.','pace');pc='slow';}}else if(diff<-0.10){{speak('너무 빨라요.','pace');pc='fast';}}}}const info=document.getElementById('pace-info');if(pc==='slow'){{info.style.color='#ef9a9a';info.innerText='🐢 느림 — '+ps;}}else if(pc==='fast'){{info.style.color='#fff176';info.innerText='🚀 빠름 — '+ps;}}else{{info.style.color='#a5d6a7';info.innerText='✅ 정상 — '+ps;}}if(now-lastByCat.motivation>COOLDOWN.motivation){{speak(zoneMsg(prog,pc),'motivation');}}}}}}
 
 if(navigator.geolocation){{setTimeout(()=>speak('AI 페이서 시작합니다.',null),500);ENV_MESSAGES.forEach((m,i)=>{{setTimeout(()=>speak(m,'env'),2000+i*4500);}});if(STEPS.length>0)setTimeout(()=>speak('첫 안내. '+STEPS[0].description,null),2000+ENV_MESSAGES.length*4500);navigator.geolocation.watchPosition(onGPS,err=>{{document.getElementById('gps-info').innerText='❌ GPS 오류: '+err.message;}},{{enableHighAccuracy:true,timeout:5000,maximumAge:0}});}}else{{document.getElementById('gps-info').innerText='❌ GPS 미지원';}}
 </script>
 """
+
 
 # ============================================================
 # 사이드바
 # ============================================================
 with st.sidebar:
     st.header("👤 사용자 프로필")
-    if HAS_LS:
-        st.caption("💾 데이터는 이 브라우저에 영구 저장됩니다")
-    else:
-        st.caption("⚠️ 새로고침 시 데이터 사라짐 (streamlit-local-storage 미설치)")
+    st.caption("💡 새로고침 시 프로필이 초기화됩니다")
 
     if not st.session_state.profile_set:
-        # ===== 디버그 =====
-        st.write("### 🔍 디버그")
-        if HAS_LS and localS is not None:
-            try:
-                raw_test = localS.getItem("ai_pacer_live_run", key="debug_get")
-                st.write(f"localStorage 'ai_pacer_live_run' 값: `{raw_test}`")
-                st.write(f"타입: {type(raw_test)}")
-            except Exception as e:
-                st.write(f"읽기 에러: {e}")
-    else:
-        st.write("LocalStorage 사용 불가")
-    st.markdown("---")
-    st.warning("초기 프로필을 설정해주세요")
+        st.warning("초기 프로필을 설정해주세요")
 
     with st.expander("🎯 기초기록 설문", expanded=not st.session_state.profile_set):
         st.caption("ACSM Pre-participation 가이드 기반")
@@ -385,8 +297,7 @@ with st.sidebar:
             st.session_state.baseline_weekly_km = baseline
             st.session_state.user_level = level
             st.session_state.profile_set = True
-            save_user_data()
-            st.success(f"✅ 주간 {baseline:.1f}km (저장됨)")
+            st.success(f"✅ 주간 {baseline:.1f}km")
             st.rerun()
 
     st.markdown("---")
@@ -435,8 +346,9 @@ with st.sidebar:
             st.caption(f"총 {len(st.session_state.recent_runs)}회")
         else:
             st.caption("기록 없음")
-        if st.button("🗑️ 데이터 초기화", use_container_width=True):
-            clear_user_data()
+        if st.button("🗑️ 초기화", use_container_width=True):
+            for k in ["profile_set", "baseline_weekly_km", "user_level", "recent_runs"]:
+                st.session_state[k] = defaults[k]
             st.rerun()
 
     st.markdown("---")
@@ -447,7 +359,6 @@ with st.sidebar:
                 if i % 2 == 0:
                     runs.append(((today - timedelta(days=i)).strftime("%Y-%m-%d"), 5.0))
             st.session_state.recent_runs = runs
-            save_user_data()
             st.rerun()
         if st.button("🚨 Danger Zone 패턴", use_container_width=True):
             runs = []
@@ -457,8 +368,8 @@ with st.sidebar:
             for i in range(7, 0, -1):
                 runs.append(((today - timedelta(days=i)).strftime("%Y-%m-%d"), 12.0))
             st.session_state.recent_runs = runs
-            save_user_data()
             st.rerun()
+
 
 # ============================================================
 # 메인 UI
@@ -538,10 +449,8 @@ with tab_setup:
                                    (st.session_state.s_lng+st.session_state.e_lng)/2], zoom_start=15)
         folium.PolyLine(path, color="#1E88E5", weight=6, opacity=0.9).add_to(mp)
         folium.Marker([st.session_state.s_lat, st.session_state.s_lng],
-                      tooltip=f"출발: {st.session_state.s_name}",
                       icon=folium.Icon(color="green", icon="play")).add_to(mp)
         folium.Marker([st.session_state.e_lat, st.session_state.e_lng],
-                      tooltip=f"도착: {st.session_state.e_name}",
                       icon=folium.Icon(color="red", icon="flag")).add_to(mp)
         st_folium(mp, width=None, height=420)
 
@@ -559,6 +468,7 @@ with tab_setup:
                 "gps_track": [], "pace_history": [],
                 "start_time": datetime.now(), "current_nav_step": 0})
             st.success("러닝 시작! '러닝 중' 탭으로 이동하세요.")
+
 
 # TAB 2
 with tab_running:
@@ -581,89 +491,34 @@ with tab_running:
 
     st.markdown("---")
     target = st.session_state.target_pace
-    current = st.session_state.current_pace
-    if current and current > 0:
-        pace_diff = current - target
-    else:
-        current = 0
-        pace_diff = 0
     elapsed = int((datetime.now() - st.session_state.start_time).total_seconds()) \
         if st.session_state.start_time else 0
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("🎯 목표", f"{target:.1f} min/km")
-    c2.metric("🏃 현재", f"{current:.1f} min/km",
-              delta=f"{'느림▲' if pace_diff>0 else '빠름▼'} {abs(pace_diff):.1f}",
-              delta_color="inverse")
-    c3.metric("⏱️ 경과", f"{elapsed//60}분 {elapsed%60}초")
+    c1, c2 = st.columns(2)
+    c1.metric("🎯 목표 페이스", f"{target:.1f} min/km")
+    c2.metric("⏱️ 경과", f"{elapsed//60}분 {elapsed%60}초")
+    st.caption("💡 현재 페이스는 위 실시간 패널에서 확인하세요")
 
     st.markdown("---")
-    if rd:
-        path = rd["path"]
-        cl = st.session_state.current_lat or st.session_state.s_lat
-        cn = st.session_state.current_lng or st.session_state.s_lng
-        m2 = folium.Map(location=[cl, cn], zoom_start=17)
-        folium.PolyLine(path, color="#90CAF9", weight=5, opacity=0.6).add_to(m2)
-        track = st.session_state.gps_track
-        if len(track) >= 2:
-            folium.PolyLine([[t[0], t[1]] for t in track],
-                             color="#FF6D00", weight=5, opacity=0.95).add_to(m2)
-        folium.CircleMarker([cl, cn], radius=10, color="#1565C0",
-                             fill=True, fill_color="#1E88E5", fill_opacity=0.9).add_to(m2)
-        folium.Marker([st.session_state.s_lat, st.session_state.s_lng],
-                       icon=folium.Icon(color="green", icon="play")).add_to(m2)
-        folium.Marker([st.session_state.e_lat, st.session_state.e_lng],
-                       icon=folium.Icon(color="red", icon="flag")).add_to(m2)
-        st_folium(m2, width=None, height=430)
+    if st.button("🛑 러닝 종료", type="secondary", use_container_width=True):
+        st.session_state.running = False
+        st.session_state.finished = True
+        st.rerun()
 
-    st.markdown("---")
-    ca, cb = st.columns(2)
-    with ca:
-        if st.button("🔊 AI 상세 코칭", type="primary", use_container_width=True):
-            with st.spinner("AI 분석 중..."):
-                tl = st.session_state.current_lat or st.session_state.s_lat
-                tn = st.session_state.current_lng or st.session_state.s_lng
-                w = get_weather_extended(tl, tn)
-                r2, e2, wb = get_environment_risk(w["temp"], w["humidity"], w["wind_ms"])
-                ps = "느리게" if pace_diff > 0 else "빠르게"
-                cs = st.session_state.current_nav_step
-                nd = steps[min(cs, len(steps)-1)]["description"] if steps else "직진"
-                prompt = f"""AI-Pacer 러닝 코치.
-내비: {nd}
-환경: {w['temp']}°C, 습도 {w['humidity']}%, WBGT {wb:.1f}°C, 바람 {w['wind_ms']}m/s, {w['desc']}
-위험도: {r2}
-페이스: 목표 {target}, 현재 {current} (목표보다 {abs(pace_diff):.1f} {ps})
-경과: {elapsed//60}분 {elapsed%60}초
-3문장 구어체: 페이스코칭 → 호흡팁 → 환경조언"""
-                try:
-                    resp = client.chat.completions.create(
-                        model="gpt-4o", messages=[{"role": "user", "content": prompt}])
-                    msg = resp.choices[0].message.content
-                    audio = client.audio.speech.create(model="tts-1", voice="alloy", input=msg)
-                    audio.stream_to_file("guide.mp3")
-                    st.success(f"🤖 {msg}")
-                    st.audio("guide.mp3")
-                except Exception as e:
-                    st.error(f"OpenAI 오류: {e}")
-    with cb:
-        if st.button("🛑 러닝 종료", type="secondary", use_container_width=True):
-            st.session_state.running = False
-            st.session_state.finished = True
-            st.rerun()
 
-# TAB 3
+# TAB 3 — JS가 모든 걸 처리
 with tab_result:
     st.subheader("🏅 러닝 리포트")
-    st.caption("러닝을 마쳤다면 자동으로 결과가 표시됩니다.")
+    st.caption("러닝 데이터는 브라우저에 저장됩니다 (LocalStorage)")
 
     components.html("""
 <div id="result-wrap" style="font-family:sans-serif;color:#e0e0e0;">
-  <div id="metrics" style="background:#1a1a2e;padding:20px;border-radius:10px;margin-bottom:15px;"></div>
-  <div id="map-wrap" style="background:#1a1a2e;padding:15px;border-radius:10px;margin-bottom:15px;">
+  <div id="metrics" style="background:#1a1a2e;padding:20px;border-radius:10px;margin-bottom:15px;min-height:80px;"></div>
+  <div id="map-wrap" style="background:#1a1a2e;padding:15px;border-radius:10px;margin-bottom:15px;display:none;">
     <div style="margin-bottom:10px;font-weight:bold;">🗺️ 러닝 발자취</div>
     <div id="map" style="height:400px;border-radius:8px;"></div>
   </div>
-  <div id="chart-wrap" style="background:#1a1a2e;padding:15px;border-radius:10px;">
+  <div id="chart-wrap" style="background:#1a1a2e;padding:15px;border-radius:10px;display:none;">
     <div style="margin-bottom:10px;font-weight:bold;">📈 페이스 변화</div>
     <canvas id="paceChart" style="max-height:250px;"></canvas>
   </div>
@@ -676,17 +531,19 @@ with tab_result:
 <script>
 (function(){
   let raw = null;
-  try { raw = localStorage.getItem('ai_pacer_live_run'); } catch(e) {}
+  try { raw = localStorage.getItem('ai_pacer_live_run'); } catch(e) {
+    document.getElementById('metrics').innerHTML = '❌ localStorage 접근 오류: ' + e.message;
+    return;
+  }
 
   if (!raw) {
     document.getElementById('metrics').innerHTML =
-      '<div style="color:#ef9a9a;padding:20px;text-align:center;">' +
+      '<div style="color:#ef9a9a;padding:10px;text-align:center;">' +
       '⚠️ 저장된 러닝 데이터가 없습니다.<br><br>' +
-      '<small>러닝 중에 GPS가 잡히고 실제로 이동했는지 확인하세요.<br>' +
-      '데스크탑에서는 GPS가 안 잡힐 수 있습니다 — 폰 사파리에서 테스트하세요.</small>' +
+      '<small>1) 러닝 중에 GPS가 잡혔는지 확인<br>' +
+      '2) 실제로 이동했는지 확인 (데스크탑에서는 GPS가 안 잡힐 수 있음)<br>' +
+      '3) 폰 사파리에서 위치 권한 허용했는지 확인</small>' +
       '</div>';
-    document.getElementById('map-wrap').style.display = 'none';
-    document.getElementById('chart-wrap').style.display = 'none';
     return;
   }
 
@@ -718,12 +575,13 @@ with tab_result:
     '<div><div style="color:#888;font-size:12px;">⏱️ 시간</div>' +
     '<div style="font-size:26px;color:#64b5f6;font-weight:bold;">' + elMin + '분 ' + elSec + '초</div></div>' +
     '<div><div style="color:#888;font-size:12px;">📈 평균 페이스</div>' +
-    '<div style="font-size:26px;color:#a5d6a7;font-weight:bold;">' + apMin + '\\'' + (apSec<10?'0':'') + apSec + '"/km</div></div>' +
+    '<div style="font-size:26px;color:#a5d6a7;font-weight:bold;">' + apMin + "'" + (apSec<10?'0':'') + apSec + '"/km</div></div>' +
     '<div><div style="color:#888;font-size:12px;">📍 GPS 포인트</div>' +
     '<div style="font-size:26px;color:#ffb74d;font-weight:bold;">' + track.length + '</div></div>' +
     '</div>';
 
   if (track.length >= 2) {
+    document.getElementById('map-wrap').style.display = 'block';
     const latlngs = track.map(t => [t[0], t[1]]);
     const map = L.map('map').setView(latlngs[0], 16);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -740,11 +598,10 @@ with tab_result:
     L.marker(latlngs[latlngs.length-1]).addTo(map).bindPopup('도착');
     map.fitBounds(latlngs);
     setTimeout(() => map.invalidateSize(), 200);
-  } else {
-    document.getElementById('map-wrap').style.display = 'none';
   }
 
   if (paces.length > 0) {
+    document.getElementById('chart-wrap').style.display = 'block';
     const ctx = document.getElementById('paceChart').getContext('2d');
     new Chart(ctx, {
       type: 'line',
@@ -752,7 +609,7 @@ with tab_result:
         labels: paces.map((_,i) => i+1),
         datasets: [{
           label: '페이스 (min/km)',
-          data: paces.map(p => p.toFixed(2)),
+          data: paces.map(p => parseFloat(p.toFixed(2))),
           borderColor: '#a5d6a7',
           backgroundColor: 'rgba(165,214,167,0.1)',
           tension: 0.3, pointRadius: 0
@@ -767,8 +624,6 @@ with tab_result:
         plugins: { legend: { labels: {color:'#e0e0e0'} } }
       }
     });
-  } else {
-    document.getElementById('chart-wrap').style.display = 'none';
   }
 })();
 </script>
@@ -776,10 +631,10 @@ with tab_result:
 
     st.markdown("---")
     st.subheader("📊 ACWR 기록 추가")
+    st.caption("위 결과의 총 거리(km)를 입력하면 ACWR에 반영됩니다")
     col_x, col_y = st.columns([3, 1])
     with col_x:
-        manual_km = st.number_input("위 결과의 총 거리(km) 입력",
-                                     min_value=0.0, max_value=100.0,
+        manual_km = st.number_input("총 거리 (km)", min_value=0.0, max_value=100.0,
                                      value=0.0, step=0.1, key="manual_dist")
     with col_y:
         st.write("")
@@ -788,13 +643,14 @@ with tab_result:
             if manual_km > 0:
                 today_str = datetime.now().strftime("%Y-%m-%d")
                 st.session_state.recent_runs.append((today_str, round(manual_km, 1)))
-                save_user_data()
-                st.success(f"✅ {manual_km}km 기록됨.")
+                st.success(f"✅ {manual_km}km 기록됨")
                 st.rerun()
 
     st.markdown("---")
-    if st.button("🔄 새 러닝 시작 (데이터 초기화)", use_container_width=True):
-        components.html("<script>try{localStorage.removeItem('ai_pacer_live_run');}catch(e){}</script>", height=0)
+    if st.button("🔄 새 러닝 시작 (저장 데이터 초기화)", use_container_width=True):
+        components.html(
+            "<script>try{localStorage.removeItem('ai_pacer_live_run');}catch(e){}</script>",
+            height=0)
         st.session_state.finished = False
         st.session_state.running = False
         st.rerun()
