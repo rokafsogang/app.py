@@ -645,7 +645,7 @@ with tab_result:
         st.info("러닝을 완료하면 여기에 결과가 기록됩니다.")
         st.stop()
 
-    # JS가 localStorage에 저장한 GPS 데이터 읽기
+    # JS localStorage에서 GPS 데이터 읽기
     run_data = None
     if HAS_LS and localS is not None:
         try:
@@ -665,10 +665,7 @@ with tab_result:
         total_dist_m = 0
 
     st.subheader("🏅 러닝 리포트")
-    track = st.session_state.gps_track
-    pace_hist = st.session_state.pace_history
 
-    st.subheader("🏅 러닝 리포트")
     if track and len(track) >= 2:
         total_dist = total_dist_m / 1000
         elapsed_total = track[-1][2] - track[0][2]
@@ -691,16 +688,6 @@ with tab_result:
             if not already_saved:
                 st.session_state.recent_runs.append((today_str, round(total_dist, 1)))
                 save_user_data()
-    else:
-        st.warning("GPS 데이터를 불러오는 중입니다. 페이지를 한 번 새로고침 해주세요.")
-        avg_pace = (elapsed_total/60)/total_dist if total_dist > 0 else 0
-        tgt = st.session_state.target_pace
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("🏃 총 거리", f"{total_dist:.1f} km")
-        c2.metric("⏱️ 시간", f"{int(elapsed_total//60)}분 {int(elapsed_total%60)}초")
-        c3.metric("📈 평균 페이스", f"{avg_pace:.1f} min/km")
-        c4.metric("🎯 목표 대비", f"{avg_pace-tgt:+.1f} min/km", delta_color="inverse")
 
         st.subheader("📊 ACWR 영향")
         if st.session_state.profile_set:
@@ -715,8 +702,8 @@ with tab_result:
             ds = 0
             if st.session_state.recent_runs:
                 ds = (td - pd.to_datetime(st.session_state.recent_runs[0][0]).date()).days
-            a2, _, _, c2 = calculate_acwr_ewma(dl, st.session_state.baseline_weekly_km, ds)
-            l2, ad2, s2 = get_acwr_advice(a2, c2)
+            a2, _, _, cf = calculate_acwr_ewma(dl, st.session_state.baseline_weekly_km, ds)
+            l2, ad2, s2 = get_acwr_advice(a2, cf)
             if s2 == "success":
                 st.success(f"{l2} — {ad2}")
             elif s2 == "warning":
@@ -725,13 +712,15 @@ with tab_result:
                 st.error(f"{l2} — {ad2}")
             else:
                 st.info(f"{l2} — {ad2}")
+    else:
+        st.warning("GPS 데이터를 불러오는 중입니다. 페이지를 한 번 새로고침 해주세요.")
 
     st.subheader("🗺️ 러닝 발자취")
     rd = st.session_state.route_data
     if rd and st.session_state.s_lat:
         path = rd["path"]
-        clat = (track[0][0]+track[-1][0])/2 if track else st.session_state.s_lat
-        clng = (track[0][1]+track[-1][1])/2 if track else st.session_state.s_lng
+        clat = (track[0][0]+track[-1][0])/2 if track and len(track) >= 2 else st.session_state.s_lat
+        clng = (track[0][1]+track[-1][1])/2 if track and len(track) >= 2 else st.session_state.s_lng
         m3 = folium.Map(location=[clat, clng], zoom_start=15)
         folium.PolyLine(path, color="#9E9E9E", weight=3, opacity=0.5).add_to(m3)
         if len(track) >= 2:
@@ -759,7 +748,7 @@ with tab_result:
             "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "route": f"{st.session_state.s_name} → {st.session_state.e_name}",
             "track": [(t[0], t[1]) for t in track],
-            "pace_history": pace_hist,
+            "pace_history": pace_list,
             "target_pace": st.session_state.target_pace,
         }
         st.download_button("📥 JSON 다운로드",
