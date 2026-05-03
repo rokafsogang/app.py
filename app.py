@@ -1,7 +1,10 @@
 """
 AI-Pacer 최종 버전
-- 시간 카운터 실시간 동작 (JS setInterval)
-- 결과 탭 자동 갱신 (러닝 종료 즉시 반영)
+수정 사항:
+- 페이스 입력을 분/초 분리 (6.8 같은 비현실적 값 제거)
+- 발표 시연용 데모 섹션 삭제
+- 결과 탭 매번 새로 렌더 (timestamp 기반 컴포넌트 ID)
+- ACWR 누적 기록 중복 허용
 """
 
 import streamlit as st
@@ -10,6 +13,7 @@ import requests
 import folium
 import json
 import math
+import time as _time
 import pandas as pd
 from streamlit_folium import st_folium
 from openai import OpenAI
@@ -41,7 +45,6 @@ defaults = {
     "recent_runs": [],
     "env_risk": None,
     "env_messages": [],
-    "result_refresh": 0,  # 결과 탭 강제 갱신용
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -351,50 +354,6 @@ with st.sidebar:
                 st.session_state[k] = defaults[k]
             st.rerun()
 
-    st.markdown("---")
-    with st.expander("🎬 발표 시연용 데모", expanded=False):
-        if st.button("✅ Sweet Spot 패턴", use_container_width=True):
-            runs = []
-            for i in range(28, 0, -1):
-                if i % 2 == 0:
-                    runs.append(((today - timedelta(days=i)).strftime("%Y-%m-%d"), 5.0))
-            st.session_state.recent_runs = runs
-            st.rerun()
-        if st.button("🚨 Danger Zone 패턴", use_container_width=True):
-            runs = []
-            for i in range(28, 7, -1):
-                if i % 4 == 0:
-                    runs.append(((today - timedelta(days=i)).strftime("%Y-%m-%d"), 3.0))
-            for i in range(7, 0, -1):
-                runs.append(((today - timedelta(days=i)).strftime("%Y-%m-%d"), 12.0))
-            st.session_state.recent_runs = runs
-            st.rerun()
-
-        # 가상 러닝 트랙 주입 (지도 데모용)
-        st.markdown("---")
-        if st.button("🗺️ 가상 러닝 트랙 주입 (지도 데모)", use_container_width=True):
-            components.html("""
-<script>
-const startLat = 37.5510, startLng = 126.9410;
-const track = [];
-const paces = [];
-let curTime = Date.now() / 1000 - 1500;
-for (let i = 0; i < 50; i++) {
-  const angle = (i / 50) * Math.PI * 2;
-  const r = 0.005;
-  const lat = startLat + r * Math.sin(angle);
-  const lng = startLng + r * Math.cos(angle) * 1.3;
-  track.push([lat, lng, curTime]);
-  curTime += 30;
-  paces.push(5.5 + Math.random() * 1.5);
-}
-localStorage.setItem('ai_pacer_live_run', JSON.stringify({
-  track: track, paces: paces, totalDist: 3000
-}));
-</script>
-""", height=0)
-            st.success("✅ 가상 트랙 주입! 결과 탭으로 가세요.")
-
 
 # ============================================================
 # 메인 UI
@@ -408,11 +367,25 @@ with tab_setup:
     col1, col2 = st.columns(2)
     with col1:
         start_input = st.text_input("출발지", placeholder="예: 서강대학교")
-        target_pace = st.slider("목표 페이스 (min/km)", 2.0, 12.0,
-                                 st.session_state.target_pace, step=0.1)
+
+        # ★ 페이스 입력을 분/초 분리
+        st.markdown("**🎯 목표 페이스**")
+        cur_min = int(st.session_state.target_pace)
+        cur_sec = int(round((st.session_state.target_pace - cur_min) * 60))
+        if cur_sec >= 60:
+            cur_min += 1
+            cur_sec = 0
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            p_min = st.number_input("분", min_value=2, max_value=12,
+                                     value=cur_min, step=1, key="pace_min")
+        with col_p2:
+            p_sec = st.number_input("초", min_value=0, max_value=59,
+                                     value=cur_sec, step=5, key="pace_sec")
+        target_pace = p_min + p_sec / 60.0
         st.session_state.target_pace = target_pace
-        pm, ps = int(target_pace), int((target_pace % 1) * 60)
-        st.caption(f"🎯 1km를 {pm}분 {ps:02d}초에 주파")
+        st.caption(f"🎯 1km를 {p_min}분 {p_sec:02d}초에 주파")
     with col2:
         end_input = st.text_input("목적지", placeholder="예: 마포구청")
 
@@ -442,7 +415,9 @@ with tab_setup:
     if st.session_state.route_data:
         rd = st.session_state.route_data
         dist_km = rd["dist_m"] / 1000
-        est_min = dist_km * st.session_state.target_pace
+        est_total_sec = dist_km * st.session_state.target_pace * 60
+        est_min_int = int(est_total_sec // 60)
+        est_sec_int = int(est_total_sec % 60)
         weather = get_weather_extended(st.session_state.s_lat, st.session_state.s_lng)
         risk, env_msgs, wbgt = get_environment_risk(
             weather["temp"], weather["humidity"], weather["wind_ms"])
@@ -451,7 +426,7 @@ with tab_setup:
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("총 거리", f"{dist_km:.2f} km")
-        c2.metric("예상 완주", f"{int(est_min)}분 {int((est_min%1)*60)}초")
+        c2.metric("예상 완주", f"{est_min_int}분 {est_sec_int}초")
         c3.metric("기온/습도", f"{weather['temp']:.0f}°C / {weather['humidity']}%",
                   delta=weather['desc'], delta_color="off")
         c4.metric("WBGT", f"{wbgt:.1f}°C",
@@ -488,6 +463,10 @@ with tab_setup:
             st.warning("⚠️ 사이드바에서 기초기록 설문 먼저 완료해주세요.")
 
         if st.button("🏃 러닝 시작!", type="primary", use_container_width=True):
+            # 러닝 시작 시 이전 localStorage 데이터 클리어
+            components.html(
+                "<script>try{localStorage.removeItem('ai_pacer_live_run');}catch(e){}</script>",
+                height=0)
             st.session_state.update({
                 "running": True, "finished": False,
                 "gps_track": [], "pace_history": [],
@@ -495,7 +474,7 @@ with tab_setup:
             st.success("러닝 시작! '러닝 중' 탭으로 이동하세요.")
 
 
-# TAB 2 — 시간 카운터 JS로 실시간 업데이트
+# TAB 2
 with tab_running:
     if not st.session_state.running and not st.session_state.finished:
         st.info("경로 설정 탭에서 러닝을 시작하세요.")
@@ -516,8 +495,9 @@ with tab_running:
 
     st.markdown("---")
     target = st.session_state.target_pace
+    tgt_min = int(target)
+    tgt_sec = int(round((target - tgt_min) * 60))
 
-    # ★ JS로 1초마다 시간 카운트 (Streamlit rerun 없이)
     start_ts = int(st.session_state.start_time.timestamp() * 1000) \
         if st.session_state.start_time else 0
 
@@ -525,7 +505,7 @@ with tab_running:
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;font-family:sans-serif;padding:15px;background:#1a1a2e;border-radius:10px;">
   <div>
     <div style="color:#888;font-size:13px;">🎯 목표 페이스</div>
-    <div style="font-size:32px;color:#64b5f6;font-weight:bold;">{target:.1f} min/km</div>
+    <div style="font-size:32px;color:#64b5f6;font-weight:bold;">{tgt_min}'{tgt_sec:02d}"/km</div>
   </div>
   <div>
     <div style="color:#888;font-size:13px;">⏱️ 경과 시간</div>
@@ -552,11 +532,10 @@ setInterval(updateElapsed, 1000);
     if st.button("🛑 러닝 종료", type="secondary", use_container_width=True):
         st.session_state.running = False
         st.session_state.finished = True
-        st.session_state.result_refresh += 1  # 결과 탭 강제 갱신
         st.rerun()
 
 
-# TAB 3 — JS 컴포넌트 키에 refresh counter 넣어 자동 재로드
+# TAB 3 — 매번 timestamp로 새로 렌더
 with tab_result:
     st.subheader("🏅 러닝 리포트")
     st.caption("러닝 데이터는 브라우저에 저장됩니다 (LocalStorage)")
@@ -564,11 +543,11 @@ with tab_result:
     col_r1, col_r2 = st.columns([1, 4])
     with col_r1:
         if st.button("🔄 새로고침", use_container_width=True):
-            st.session_state.result_refresh += 1
             st.rerun()
 
-    # ★ refresh counter를 HTML에 포함시켜 강제 재렌더
-    refresh_id = st.session_state.result_refresh
+    # ★ 매 렌더마다 다른 ID 생성 → 컴포넌트 강제 재실행
+    refresh_id = int(_time.time() * 1000)
+
     components.html(f"""
 <div id="result-wrap-{refresh_id}" style="font-family:sans-serif;color:#e0e0e0;">
   <div id="metrics-{refresh_id}" style="background:#1a1a2e;padding:20px;border-radius:10px;margin-bottom:15px;min-height:80px;"></div>
@@ -599,8 +578,7 @@ with tab_result:
     document.getElementById('metrics-' + RID).innerHTML =
       '<div style="color:#ef9a9a;padding:10px;text-align:center;">' +
       '⚠️ 저장된 러닝 데이터가 없습니다.<br><br>' +
-      '<small>러닝 중 GPS가 잡혔는지, 실제로 이동했는지 확인하세요.<br>' +
-      '데스크탑에서는 위치가 1개만 잡혀 지도가 안 나올 수 있습니다.</small>' +
+      '<small>러닝 중 GPS가 잡혔는지, 실제로 이동했는지 확인하세요.</small>' +
       '</div>';
     return;
   }}
@@ -689,19 +667,23 @@ with tab_result:
 
     st.markdown("---")
     st.subheader("📊 ACWR 기록 추가")
-    st.caption("위 결과의 총 거리(km)를 입력하면 ACWR에 반영됩니다")
+    st.caption("위 결과의 총 거리(km)를 입력하면 ACWR에 반영됩니다 (같은 날 여러 번 추가 가능)")
+
+    # ★ 입력 키를 누적 횟수로 → 추가할 때마다 입력값 자동 리셋
+    input_key = f"manual_dist_{len(st.session_state.recent_runs)}"
     col_x, col_y = st.columns([3, 1])
     with col_x:
         manual_km = st.number_input("총 거리 (km)", min_value=0.0, max_value=100.0,
-                                     value=0.0, step=0.1, key="manual_dist")
+                                     value=0.0, step=0.1, key=input_key)
     with col_y:
         st.write("")
         st.write("")
         if st.button("➕ ACWR 추가", type="primary", use_container_width=True):
             if manual_km > 0:
                 today_str = datetime.now().strftime("%Y-%m-%d")
+                # 중복 체크 없이 무조건 추가
                 st.session_state.recent_runs.append((today_str, round(manual_km, 1)))
-                st.success(f"✅ {manual_km}km 기록됨")
+                st.success(f"✅ {manual_km}km 추가됨 (총 {len(st.session_state.recent_runs)}회)")
                 st.rerun()
 
     st.markdown("---")
@@ -711,5 +693,4 @@ with tab_result:
             height=0)
         st.session_state.finished = False
         st.session_state.running = False
-        st.session_state.result_refresh += 1
         st.rerun()
