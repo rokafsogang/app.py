@@ -2,8 +2,6 @@
 AI-Pacer 최종 버전
 - 시간 카운터 실시간 동작 (JS setInterval)
 - 결과 탭 자동 갱신 (러닝 종료 즉시 반영)
-- 페이스 입력 분/초 분리
-- 발표 시연용 데모 삭제
 """
 
 import streamlit as st
@@ -367,7 +365,7 @@ with tab_setup:
     with col1:
         start_input = st.text_input("출발지", placeholder="예: 서강대학교")
 
-        # ★ 페이스 입력을 분/초 분리
+        # 페이스 분/초 입력
         st.markdown("**🎯 목표 페이스**")
         cur_min = int(st.session_state.target_pace)
         cur_sec = int(round((st.session_state.target_pace - cur_min) * 60))
@@ -414,9 +412,7 @@ with tab_setup:
     if st.session_state.route_data:
         rd = st.session_state.route_data
         dist_km = rd["dist_m"] / 1000
-        est_total_sec = dist_km * st.session_state.target_pace * 60
-        est_min_int = int(est_total_sec // 60)
-        est_sec_int = int(est_total_sec % 60)
+        est_min = dist_km * st.session_state.target_pace
         weather = get_weather_extended(st.session_state.s_lat, st.session_state.s_lng)
         risk, env_msgs, wbgt = get_environment_risk(
             weather["temp"], weather["humidity"], weather["wind_ms"])
@@ -425,7 +421,7 @@ with tab_setup:
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("총 거리", f"{dist_km:.2f} km")
-        c2.metric("예상 완주", f"{est_min_int}분 {est_sec_int}초")
+        c2.metric("예상 완주", f"{int(est_min)}분 {int((est_min%1)*60)}초")
         c3.metric("기온/습도", f"{weather['temp']:.0f}°C / {weather['humidity']}%",
                   delta=weather['desc'], delta_color="off")
         c4.metric("WBGT", f"{wbgt:.1f}°C",
@@ -490,8 +486,6 @@ with tab_running:
 
     st.markdown("---")
     target = st.session_state.target_pace
-    tgt_min = int(target)
-    tgt_sec = int(round((target - tgt_min) * 60))
 
     # ★ JS로 1초마다 시간 카운트 (Streamlit rerun 없이)
     start_ts = int(st.session_state.start_time.timestamp() * 1000) \
@@ -501,7 +495,7 @@ with tab_running:
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;font-family:sans-serif;padding:15px;background:#1a1a2e;border-radius:10px;">
   <div>
     <div style="color:#888;font-size:13px;">🎯 목표 페이스</div>
-    <div style="font-size:32px;color:#64b5f6;font-weight:bold;">{tgt_min}'{tgt_sec:02d}"/km</div>
+    <div style="font-size:32px;color:#64b5f6;font-weight:bold;">{target:.1f} min/km</div>
   </div>
   <div>
     <div style="color:#888;font-size:13px;">⏱️ 경과 시간</div>
