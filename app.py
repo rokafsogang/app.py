@@ -1,10 +1,9 @@
 """
 AI-Pacer 최종 버전
-수정 사항:
-- 페이스 입력을 분/초 분리 (6.8 같은 비현실적 값 제거)
-- 발표 시연용 데모 섹션 삭제
-- 결과 탭 매번 새로 렌더 (timestamp 기반 컴포넌트 ID)
-- ACWR 누적 기록 중복 허용
+- 시간 카운터 실시간 동작 (JS setInterval)
+- 결과 탭 자동 갱신 (러닝 종료 즉시 반영)
+- 페이스 입력 분/초 분리
+- 발표 시연용 데모 삭제
 """
 
 import streamlit as st
@@ -13,7 +12,6 @@ import requests
 import folium
 import json
 import math
-import time as _time
 import pandas as pd
 from streamlit_folium import st_folium
 from openai import OpenAI
@@ -45,6 +43,7 @@ defaults = {
     "recent_runs": [],
     "env_risk": None,
     "env_messages": [],
+    "result_refresh": 0,  # 결과 탭 강제 갱신용
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -463,10 +462,6 @@ with tab_setup:
             st.warning("⚠️ 사이드바에서 기초기록 설문 먼저 완료해주세요.")
 
         if st.button("🏃 러닝 시작!", type="primary", use_container_width=True):
-            # 러닝 시작 시 이전 localStorage 데이터 클리어
-            components.html(
-                "<script>try{localStorage.removeItem('ai_pacer_live_run');}catch(e){}</script>",
-                height=0)
             st.session_state.update({
                 "running": True, "finished": False,
                 "gps_track": [], "pace_history": [],
@@ -474,7 +469,7 @@ with tab_setup:
             st.success("러닝 시작! '러닝 중' 탭으로 이동하세요.")
 
 
-# TAB 2
+# TAB 2 — 시간 카운터 JS로 실시간 업데이트
 with tab_running:
     if not st.session_state.running and not st.session_state.finished:
         st.info("경로 설정 탭에서 러닝을 시작하세요.")
@@ -498,6 +493,7 @@ with tab_running:
     tgt_min = int(target)
     tgt_sec = int(round((target - tgt_min) * 60))
 
+    # ★ JS로 1초마다 시간 카운트 (Streamlit rerun 없이)
     start_ts = int(st.session_state.start_time.timestamp() * 1000) \
         if st.session_state.start_time else 0
 
@@ -532,10 +528,11 @@ setInterval(updateElapsed, 1000);
     if st.button("🛑 러닝 종료", type="secondary", use_container_width=True):
         st.session_state.running = False
         st.session_state.finished = True
+        st.session_state.result_refresh += 1  # 결과 탭 강제 갱신
         st.rerun()
 
 
-# TAB 3 — 매번 timestamp로 새로 렌더
+# TAB 3 — JS 컴포넌트 키에 refresh counter 넣어 자동 재로드
 with tab_result:
     st.subheader("🏅 러닝 리포트")
     st.caption("러닝 데이터는 브라우저에 저장됩니다 (LocalStorage)")
@@ -543,11 +540,11 @@ with tab_result:
     col_r1, col_r2 = st.columns([1, 4])
     with col_r1:
         if st.button("🔄 새로고침", use_container_width=True):
+            st.session_state.result_refresh += 1
             st.rerun()
 
-    # ★ 매 렌더마다 다른 ID 생성 → 컴포넌트 강제 재실행
-    refresh_id = int(_time.time() * 1000)
-
+    # ★ refresh counter를 HTML에 포함시켜 강제 재렌더
+    refresh_id = st.session_state.result_refresh
     components.html(f"""
 <div id="result-wrap-{refresh_id}" style="font-family:sans-serif;color:#e0e0e0;">
   <div id="metrics-{refresh_id}" style="background:#1a1a2e;padding:20px;border-radius:10px;margin-bottom:15px;min-height:80px;"></div>
@@ -578,7 +575,8 @@ with tab_result:
     document.getElementById('metrics-' + RID).innerHTML =
       '<div style="color:#ef9a9a;padding:10px;text-align:center;">' +
       '⚠️ 저장된 러닝 데이터가 없습니다.<br><br>' +
-      '<small>러닝 중 GPS가 잡혔는지, 실제로 이동했는지 확인하세요.</small>' +
+      '<small>러닝 중 GPS가 잡혔는지, 실제로 이동했는지 확인하세요.<br>' +
+      '데스크탑에서는 위치가 1개만 잡혀 지도가 안 나올 수 있습니다.</small>' +
       '</div>';
     return;
   }}
@@ -667,23 +665,19 @@ with tab_result:
 
     st.markdown("---")
     st.subheader("📊 ACWR 기록 추가")
-    st.caption("위 결과의 총 거리(km)를 입력하면 ACWR에 반영됩니다 (같은 날 여러 번 추가 가능)")
-
-    # ★ 입력 키를 누적 횟수로 → 추가할 때마다 입력값 자동 리셋
-    input_key = f"manual_dist_{len(st.session_state.recent_runs)}"
+    st.caption("위 결과의 총 거리(km)를 입력하면 ACWR에 반영됩니다")
     col_x, col_y = st.columns([3, 1])
     with col_x:
         manual_km = st.number_input("총 거리 (km)", min_value=0.0, max_value=100.0,
-                                     value=0.0, step=0.1, key=input_key)
+                                     value=0.0, step=0.1, key="manual_dist")
     with col_y:
         st.write("")
         st.write("")
         if st.button("➕ ACWR 추가", type="primary", use_container_width=True):
             if manual_km > 0:
                 today_str = datetime.now().strftime("%Y-%m-%d")
-                # 중복 체크 없이 무조건 추가
                 st.session_state.recent_runs.append((today_str, round(manual_km, 1)))
-                st.success(f"✅ {manual_km}km 추가됨 (총 {len(st.session_state.recent_runs)}회)")
+                st.success(f"✅ {manual_km}km 기록됨")
                 st.rerun()
 
     st.markdown("---")
@@ -693,4 +687,5 @@ with tab_result:
             height=0)
         st.session_state.finished = False
         st.session_state.running = False
+        st.session_state.result_refresh += 1
         st.rerun()
